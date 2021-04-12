@@ -1,0 +1,52 @@
+name: BUILD
+
+on:
+  push:
+      branches: [master]
+  pull_request:
+      branches: [develop]
+  watch:
+      types: [started]
+
+jobs:
+  build:
+
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: modify scheme
+        run: |
+          sed -i "" 's/iina:\/\//iinadv:\/\//g' iina+/Utils/Processes.swift
+          sed -i "" 's/IINA.app/IINA-Danmaku.app/g' iina+/Utils/Processes.swift
+          sed -i "" 's/IINA.app/IINA-Danmaku.app/g' iina+/Views/Preferences/GereralViewController.swift
+
+
+      - name: Prepare Dependency
+        run: export GITHUB_ACCESS_TOKEN=${{ secrets.CARTHAGE }}; carthage bootstrap --platform macOS
+
+      - name: Build
+        run: xcodebuild -workspace iina+.xcodeproj/project.xcworkspace/ -scheme iina+ CODE_SIGNING_ALLOWED=NO -configuration Release
+        
+      - name: 打包app
+        run: |
+          rm -rf ./artifact/
+          mkdir -p ./artifact/release
+          cd ~/Library/Developer/Xcode/DerivedData/iina+-*/Build/Products/Release
+          tar cvzf iina+.tgz iina+.app
+          cd -
+          find ~/Library/Developer/Xcode/DerivedData/iina+-*/Build/Products/Release -name "iina+.tgz" | xargs -I {} mv -f {} ./artifact/release/
+
+      - name: 上传 iina+.app
+        uses: actions/upload-artifact@v2
+        with:
+          name: iina+.app
+          path: ./artifact/release/
+
+#      - name: SSH 连接到 Actions
+#        uses: P3TERX/ssh2actions@main
+#        env:
+#          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+#          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}    
+                
