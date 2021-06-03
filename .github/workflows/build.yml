@@ -28,7 +28,8 @@ jobs:
 
       - name: Build
         run: xcodebuild -workspace iina+.xcodeproj/project.xcworkspace/ -scheme iina+ CODE_SIGNING_ALLOWED=NO -configuration Release
-        
+      - name: 设置版本号
+        run:  echo "ReleaseVersion=`date +%Y%m%d`" >> $GITHUB_ENV        
       - name: 打包app
         run: |
           rm -rf ./artifact/
@@ -37,7 +38,14 @@ jobs:
           tar cvzf iina+.tgz iina+.app
           cd -
           find ~/Library/Developer/Xcode/DerivedData/iina+-*/Build/Products/Release -name "iina+.tgz" | xargs -I {} mv -f {} ./artifact/release/
-
+      - uses: "marvinpinto/action-automatic-releases@latest"
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          prerelease: false
+          automatic_release_tag: ${{ env.ReleaseVersion }}
+          title: ${{ env.ReleaseVersion }}
+          files: |
+            ./artifact/release/*
       - name: 上传 iina+.app
         uses: actions/upload-artifact@v2
         with:
