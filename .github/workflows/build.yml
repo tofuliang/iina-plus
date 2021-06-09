@@ -35,10 +35,10 @@ jobs:
         run: |
           rm -rf ./artifact/
           mkdir -p ./artifact/release
-          cd ~/Library/Developer/Xcode/DerivedData/iina+-*/Build/Products/Release
-          tar cvzf iina+.tgz iina+.app
+          cd ~/Library/Developer/Xcode/DerivedData/IINA+-*/Build/Products/Release
+          tar cvzf IINA+.tgz IINA+.app
           cd -
-          find ~/Library/Developer/Xcode/DerivedData/iina+-*/Build/Products/Release -name "iina+.tgz" | xargs -I {} mv -f {} ./artifact/release/
+          find ~/Library/Developer/Xcode/DerivedData/IINA+-*/Build/Products/Release -name "IINA+.tgz" | xargs -I {} mv -f {} ./artifact/release/
       - uses: "marvinpinto/action-automatic-releases@latest"
         with:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
