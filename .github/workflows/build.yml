@@ -21,9 +21,7 @@ jobs:
           sed -i "" 's/iina:\/\//iinadv:\/\//g' iina+/Utils/Processes.swift
           sed -i "" 's/IINA.app/IINA-Danmaku.app/g' iina+/Utils/Processes.swift
           sed -i "" 's/IINA.app/IINA-Danmaku.app/g' iina+/Views/Preferences/GereralViewController.swift
-          rm Cartfile.resolved
-
-
+          rm Cartfile.resolved || true
       - name: Prepare Dependency
         run: GITHUB_ACCESS_TOKEN=${{ secrets.CARTHAGE }} carthage bootstrap --platform macOS
 
