@@ -6,7 +6,7 @@ on:
 
 jobs:
   debug:
-    runs-on: macos-latest
+    runs-on: macos-11.0
     steps:
      - name: SSH 连接到 Actions
        uses: P3TERX/ssh2actions@main
