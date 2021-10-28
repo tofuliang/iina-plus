@@ -59,6 +59,13 @@ class VideoGet: NSObject {
     let douyuWebview = WKWebView()
     var douyuWebviewObserver: NSKeyValueObservation?
     
+    lazy var pSession: Session = {
+        let configuration = URLSessionConfiguration.af.default
+        let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"
+        configuration.headers.add(.userAgent(ua))
+        return Session(configuration: configuration)
+    }()
+    
     func decodeUrl(_ url: String) -> Promise<YouGetJSON> {
         
         var yougetJson = YouGetJSON(url:"")
@@ -117,7 +124,7 @@ class VideoGet: NSObject {
                 return yougetJson
             }
         case .huya:
-            return getHuyaInfo(url).map {
+            return getHuyaInfoM(url).map {
                 yougetJson.title = $0.0.title
                 $0.1.enumerated().forEach {
                     yougetJson.streams[$0.element.0] = $0.element.1
@@ -238,7 +245,7 @@ class VideoGet: NSObject {
                 $0 as LiveInfo
             }
         case .huya:
-            return getHuyaInfo(url).map {
+            return getHuyaInfoM(url).map {
                 $0.0
             }
         case .quanmin:
@@ -702,6 +709,32 @@ extension VideoGet {
         }
     }
     
+    func getHuyaInfoM(_ url: URL) -> Promise<(HuyaInfoM, [(String, Stream)])> {
+        return Promise { resolver in
+            pSession.request(url.absoluteString).response { response in
+                if let error = response.error {
+                    resolver.reject(error)
+                }
+                guard let text = response.text,
+                      let jsonData = text.subString(from: "<script> window.HNF_GLOBAL_INIT = ", to: " </script>").data(using: .utf8)
+                else {
+                    resolver.reject(VideoGetError.notFindUrls)
+                    return
+                }
+                
+                do {
+                    let jsonObj: JSONObject = try JSONParser.JSONObjectWithData(jsonData)
+                    
+                    let info: HuyaInfoM = try HuyaInfoM(object: jsonObj)
+                          
+                    resolver.fulfill((info, info.urls))
+                } catch let error {
+                    resolver.reject(error)
+                }
+            }
+        }
+    }
+    
     // MARK: - eGame
     
     func getEgameInfo(_ url: URL) -> Promise<(EgameInfo, [EgameUrl])> {
@@ -790,6 +823,7 @@ extension VideoGet {
                 }
                 let pages: [Page] = try initialStateJson.value(for: "videoData.pages")
                 yougetJson.id = try initialStateJson.value(for: "videoData.cid")
+                let bvid: String = try initialStateJson.value(for: "videoData.bvid")
                 
                 if let p = url.query?.replacingOccurrences(of: "p=", with: ""),
                    let pInt = Int(p),
@@ -802,25 +836,16 @@ extension VideoGet {
                 yougetJson.title = title
                 yougetJson.duration = try initialStateJson.value(for: "videoData.duration")
 
-                if let playInfo: BilibiliPlayInfo = try? playInfoJson.value(for: "data") {
-                    playInfo.videos.enumerated().forEach {
-                        var stream = Stream(url: $0.element.url)
-                        stream.quality = $0.element.bandwidth
-                        yougetJson.streams[$0.element.description] = stream
+                
+                if let code: Int64 = try? playInfoJson.value(for: "code"),
+                    code == -404 {
+                    bilibiliPlayUrl(bvid: bvid, yougetJson: yougetJson).done {
+                        resolver.fulfill($0)
+                    }.catch {
+                        resolver.reject($0)
                     }
-                    
-                    guard let audios = playInfo.audios else {
-                        resolver.fulfill(yougetJson)
-                        return
-                    }
-                    
-                    guard let audio = audios.max(by: { $0.bandwidth > $1.bandwidth }),
-                          playInfo.videos.count > 0 else {
-                            resolver.reject(VideoGetError.notFindUrls)
-                            return
-                    }
-                    
-                    yougetJson.audio = audio.url
+                } else if let playInfo: BilibiliPlayInfo = try? playInfoJson.value(for: "data") {
+                    yougetJson = playInfo.write(to: yougetJson)
                     resolver.fulfill(yougetJson)
                 } else if let info: BilibiliSimplePlayInfo = try? playInfoJson.value(for: "data"), let url = info.url {
                     
@@ -847,6 +872,38 @@ extension VideoGet {
         let cookie = HTTPCookie(properties: cookieProperties)
         HTTPCookieStorage.shared.setCookie(cookie!)
         
+    }
+    
+    func bilibiliPlayUrl(bvid: String, yougetJson: YouGetJSON) -> Promise<(YouGetJSON)> {
+        var yougetJson = yougetJson
+        let cid = yougetJson.id
+        let u = "https://api.bilibili.com/x/player/playurl?cid=\(cid)&qn=0&otype=json&bvid=\(bvid)&fnver=0&fnval=976"
+        
+        let headers = HTTPHeaders(
+            ["Referer": "https://www.bilibili.com/",
+             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:38.0) Gecko/20100101 Firefox/38.0 Iceweasel/38.2.1"])
+        
+        return Promise { resolver in
+            AF.request(u, headers: headers).response { response in
+                if let error = response.error {
+                    resolver.reject(error)
+                }
+                guard let data = response.data else {
+                    resolver.reject(VideoGetError.notFountData)
+                    return
+                }
+                do {
+                    let json: JSONObject = try JSONParser.JSONObjectWithData(data)
+                    
+                    let playInfo: BilibiliPlayInfo = try json.value(for: "data")
+                    
+                    yougetJson = playInfo.write(to: yougetJson)
+                    resolver.fulfill(yougetJson)
+                } catch let error {
+                    resolver.reject(error)
+                }
+            }
+        }
     }
 
     // MARK: - Bangumi
@@ -927,26 +984,7 @@ extension VideoGet {
                 
                 if let playInfo: BilibiliPlayInfo = (try? playInfoJson.value(for: "result")) ?? (try? playInfoJson.value(for: "data")) {
                     
-                    yougetJson.duration = playInfo.duration
-                    
-                    playInfo.videos.sorted(by: { $0.id > $1.id }).enumerated().forEach {
-                        var stream = Stream(url: $0.element.url)
-                        stream.quality = $0.element.bandwidth
-                        yougetJson.streams[$0.element.description] = stream
-                    }
-                    
-                    guard let audios = playInfo.audios else {
-                        resolver.fulfill(yougetJson)
-                        return
-                    }
-                    
-                    guard let audio = audios.max(by: { $0.bandwidth > $1.bandwidth }),
-                          playInfo.videos.count > 0 else {
-                            resolver.reject(VideoGetError.notFindUrls)
-                            return
-                    }
-                    
-                    yougetJson.audio = audio.url
+                    yougetJson = playInfo.write(to: yougetJson)
                     resolver.fulfill(yougetJson)
                 } else if let info: BilibiliSimplePlayInfo = try? playInfoJson.value(for: "result"),
                           let url = info.url,
