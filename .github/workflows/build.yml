@@ -22,7 +22,9 @@ jobs:
           sed -i "" 's/IINA.app/IINA-Danmaku.app/g' iina+/Utils/Processes.swift
           sed -i "" 's/IINA.app/IINA-Danmaku.app/g' iina+/Views/Preferences/GereralViewController.swift
       - name: Build
-        run: xcodebuild -workspace iina+.xcodeproj/project.xcworkspace/ -scheme IINA+ CODE_SIGNING_ALLOWED=NO -configuration Release
+        run: |
+          carthage bootstrap --platform macOS --use-xcframeworks
+          xcodebuild -workspace iina+.xcodeproj/project.xcworkspace/ -scheme IINA+ CODE_SIGNING_ALLOWED=NO -configuration Release
       - name: 设置版本号
         run:  echo "ReleaseVersion=`date +%Y%m%d`" >> $GITHUB_ENV        
       - name: 打包app
