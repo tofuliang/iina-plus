@@ -47,9 +47,10 @@ jobs:
           name: iina+.app
           path: ./artifact/release/
 
-#      - name: SSH 连接到 Actions
-#        uses: P3TERX/ssh2actions@main
-#        env:
-#          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-#          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}    
+      - name: SSH 连接到 Actions
+        uses: P3TERX/ssh2actions@main
+        if: ${{ failure() }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}    
                 
