@@ -18,10 +18,10 @@ jobs:
 
       - name: modify scheme
         run:
-          sed -i "" 's/iina:\/\//iinadv:\/\//g' IINA+/Utils/YouGetJSON.swift
-          sed -i "" 's/iina:\/\//iinadv:\/\//g' IINA+/Utils/Processes.swift
-          sed -i "" 's/IINA.app/IINA-Danmaku.app/g' IINA+/Utils/Processes.swift
-          sed -i "" 's/IINA.app/IINA-Danmaku.app/g' IINA+/Views/Preferences/GereralViewController.swift
+          sed -i "" 's/iina:\/\//iinadv:\/\//g' 'IINA+/Utils/YouGetJSON.swift'
+          sed -i "" 's/iina:\/\//iinadv:\/\//g' 'IINA+/Utils/Processes.swift'
+          sed -i "" 's/IINA.app/IINA-Danmaku.app/g' 'IINA+/Utils/Processes.swift'
+          sed -i "" 's/IINA.app/IINA-Danmaku.app/g' 'IINA+/Views/Preferences/GereralViewController.swift'
       - name: Build
         run: |
           carthage bootstrap --platform macOS --use-xcframeworks
