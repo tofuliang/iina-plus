@@ -18,42 +18,44 @@ jobs:
 
       - name: modify scheme
         run:
-          sed -i "" 's/iina:\/\//iinadv:\/\//g' 'IINA+/Utils/YouGetJSON.swift'
-          sed -i "" 's/iina:\/\//iinadv:\/\//g' 'IINA+/Utils/Processes.swift'
-          sed -i "" 's/IINA.app/IINA-Danmaku.app/g' 'IINA+/Utils/Processes.swift'
-          sed -i "" 's/IINA.app/IINA-Danmaku.app/g' 'IINA+/Views/Preferences/GereralViewController.swift'
-      - name: Build
-        run: |
-          carthage bootstrap --platform macOS --use-xcframeworks
-          xcodebuild -workspace iina+.xcodeproj/project.xcworkspace/ -scheme IINA+ CODE_SIGNING_ALLOWED=NO -configuration Release
-      - name: 设置版本号
-        run:  echo "ReleaseVersion=`date +%Y%m%d`" >> $GITHUB_ENV        
-      - name: 打包app
-        run: |
-          rm -rf ./artifact/
-          mkdir -p ./artifact/release
-          cd ~/Library/Developer/Xcode/DerivedData/IINA+-*/Build/Products/Release
-          tar cvzf IINA+.tgz IINA+.app
-          cd -
-          find ~/Library/Developer/Xcode/DerivedData/IINA+-*/Build/Products/Release -name "IINA+.tgz" | xargs -I {} mv -f {} ./artifact/release/
-      - uses: "marvinpinto/action-automatic-releases@latest"
-        with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          prerelease: false
-          automatic_release_tag: ${{ env.ReleaseVersion }}
-          title: ${{ env.ReleaseVersion }}
-          files: |
-            ./artifact/release/*
-      - name: 上传 IINA+.app
-        uses: actions/upload-artifact@v2
-        with:
-          name: IINA+.app
-          path: ./artifact/release/
+          ls -hal 'IINA+'
+          ls -hal 'IINA+/Utils'
+#           sed -i "" 's/iina:\/\//iinadv:\/\//g' 'IINA+/Utils/YouGetJSON.swift'
+#           sed -i "" 's/iina:\/\//iinadv:\/\//g' 'IINA+/Utils/Processes.swift'
+#           sed -i "" 's/IINA.app/IINA-Danmaku.app/g' 'IINA+/Utils/Processes.swift'
+#           sed -i "" 's/IINA.app/IINA-Danmaku.app/g' 'IINA+/Views/Preferences/GereralViewController.swift'
+#       - name: Build
+#         run: |
+#           carthage bootstrap --platform macOS --use-xcframeworks
+#           xcodebuild -workspace iina+.xcodeproj/project.xcworkspace/ -scheme IINA+ CODE_SIGNING_ALLOWED=NO -configuration Release
+#       - name: 设置版本号
+#         run:  echo "ReleaseVersion=`date +%Y%m%d`" >> $GITHUB_ENV        
+#       - name: 打包app
+#         run: |
+#           rm -rf ./artifact/
+#           mkdir -p ./artifact/release
+#           cd ~/Library/Developer/Xcode/DerivedData/IINA+-*/Build/Products/Release
+#           tar cvzf IINA+.tgz IINA+.app
+#           cd -
+#           find ~/Library/Developer/Xcode/DerivedData/IINA+-*/Build/Products/Release -name "IINA+.tgz" | xargs -I {} mv -f {} ./artifact/release/
+#       - uses: "marvinpinto/action-automatic-releases@latest"
+#         with:
+#           repo_token: "${{ secrets.GITHUB_TOKEN }}"
+#           prerelease: false
+#           automatic_release_tag: ${{ env.ReleaseVersion }}
+#           title: ${{ env.ReleaseVersion }}
+#           files: |
+#             ./artifact/release/*
+#       - name: 上传 IINA+.app
+#         uses: actions/upload-artifact@v2
+#         with:
+#           name: IINA+.app
+#           path: ./artifact/release/
 
-      - name: SSH 连接到 Actions
-        uses: P3TERX/ssh2actions@main
-        if: ${{ failure() }}
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}    
+#       - name: SSH 连接到 Actions
+#         uses: P3TERX/ssh2actions@main
+#         if: ${{ failure() }}
+#         env:
+#           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+#           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}    
                 
