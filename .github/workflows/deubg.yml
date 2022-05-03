@@ -1,0 +1,60 @@
+name: BUILD
+
+on:
+  watch:
+    types: [started]
+
+jobs:
+  debug:
+    runs-on: macos-11.0
+    if: github.event.repository.owner.id == github.event.sender.id
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_PUBKEY: ${{secrets.SSH_PUBKEY}}
+      TUNNEL_HOST: ${{secrets.TUNNEL_HOST}}
+    steps:
+      - name: SSH Tunnel
+        run: |
+          mkdir -p $HOME/.ssh
+          cat <<< ${SSH_PRIVATE_KEY} > $HOME/.ssh/id_rsa
+          cat <<< ${SSH_PUBKEY} > $HOME/.ssh/authorized_keys
+          sed 's/-----BEGIN OPENSSH PRIVATE KEY-----/-----BEGIN-OPENSSH-PRIVATE-KEY-----/' ~/.ssh/id_rsa|
+          sed 's/-----END OPENSSH PRIVATE KEY-----/-----END-OPENSSH-PRIVATE-KEY-----/' |
+          sed "s/ /\n/g"|sed 's/-----BEGIN-OPENSSH-PRIVATE-KEY-----/-----BEGIN OPENSSH PRIVATE KEY-----/'|
+          sed 's/-----END-OPENSSH-PRIVATE-KEY-----/-----END OPENSSH PRIVATE KEY-----/'|
+          tee  ~/.ssh/id_rsa > /dev/null 2>&1
+          chmod 600 $HOME/.ssh/id_rsa
+          chmod 600 $HOME/.ssh/authorized_keys
+          chmod 700 $HOME/.ssh
+          random_port=$(jot -r 1 20000 65000)
+          if [[ -n "${TELEGRAM_BOT_TOKEN}" && -n "${TELEGRAM_CHAT_ID}" ]]; then
+              TELEGRAM_LOG="/tmp/telegram.log"
+              SSH_CMD="ssh runner@${TUNNEL_HOST} -p $random_port"
+              MSG="
+              *GitHub Actions - IINA-Plus SSH tunnel info:*
+              ⚡ *CLI:*
+              \`${SSH_CMD}\`
+              "
+              echo -e "Sending message to Telegram..."
+              curl -sSX POST "${TELEGRAM_API_URL:-https://api.telegram.org}/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                  -d "disable_web_page_preview=true" \
+                  -d "parse_mode=Markdown" \
+                  -d "chat_id=${TELEGRAM_CHAT_ID}" \
+                  -d "text=${MSG}" >${TELEGRAM_LOG}
+              TELEGRAM_STATUS=$(cat ${TELEGRAM_LOG} | jq -r .ok)
+              if [[ ${TELEGRAM_STATUS} != true ]]; then
+                  echo -e "Telegram message sending failed: $(cat ${TELEGRAM_LOG})"
+              else
+                  echo -e "Telegram message sent successfully!"
+              fi
+          fi
+          screen -dmS ngrok bash -c \
+              "ssh -CNTR $random_port:127.0.0.1:22 -oStrictHostKeyChecking=no -oServerAliveInterval=30 -oServerAliveCountMax=60 -C ubuntu@${TUNNEL_HOST} -v 2>&1"
+
+      - name: SSH 连接到 Actions
+        uses: P3TERX/ssh2actions@main
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

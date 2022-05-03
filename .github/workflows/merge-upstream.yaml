@@ -1,0 +1,46 @@
+#
+# This is free software, lisence use MIT.
+# 
+# Copyright (C) 2019 KFERMercer <KFER.Mercer@gmail.com>
+
+
+name: Merge-upstream
+
+on:
+  push:
+    branches: 
+      - master
+  schedule:
+    - cron: 30 */2 * * *
+
+jobs:
+  merge:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+    - name: Checkout
+      uses: actions/checkout@master
+      with:
+        ref: master
+        fetch-depth: 0
+        lfs: true
+
+    - name: Set git identity
+      run : |
+        git config --global user.email "tofuliang@gmail.com"
+        git config --global user.name "tofuliang"
+    - name: rebase on upstream commits
+      env:
+        DOWNSTREAM_BRANCH: master
+      run : |
+        git remote add upstream https://github.com/xjbeta/iina-plus.git
+        git fetch upstream
+        if [ $(git diff upstream/master HEAD^ |wc -l) -gt 0 ];then
+          git reset upstream/master
+          git reset --hard upstream/master
+          git add .
+          git commit -m "rebase"
+          git push -f origin $DOWNSTREAM_BRANCH
+        fi
