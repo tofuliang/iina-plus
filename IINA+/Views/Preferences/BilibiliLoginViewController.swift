@@ -80,7 +80,7 @@ document.getElementsByClassName("v-navbar__back")[0].remove();
         webView.isHidden = false
         
         let request = URLRequest(url: url!)
-        webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 10_2_1 like Mac OS X) AppleWebKit/602.4.6 (KHTML, like Gecko) Version/10.0 Mobile/14D27 Safari/602.1"
+        webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         webView.load(request)
     }
     
