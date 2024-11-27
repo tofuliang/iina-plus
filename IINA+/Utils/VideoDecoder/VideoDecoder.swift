@@ -8,14 +8,12 @@
 
 import Cocoa
 import Alamofire
-import PromiseKit
 import Marshal
 import CommonCrypto
-import JavaScriptCore
-import WebKit
+@preconcurrency import JavaScriptCore
 import SwiftSoup
 
-class VideoDecoder: NSObject {
+actor VideoDecoder {
     lazy var douyin = DouYin()
     lazy var huya = Huya()
     lazy var douyu = Douyu()
@@ -23,178 +21,196 @@ class VideoDecoder: NSObject {
     lazy var biliLive = BiliLive()
     lazy var bilibili = Bilibili()
     lazy var qqLive = QQLive()
+	
+	let enableDash = false
     
     
-    func bilibiliUrlFormatter(_ url: String) -> Promise<String> {
+    func bilibiliUrlFormatter(_ url: String) async throws -> String {
         let site = SupportSites(url: url)
         
         switch site {
         case .bilibili, .bangumi:
-            return .value(BilibiliUrl(url: url)!.fUrl)
+            return BilibiliUrl(url: url)!.fUrl
         case .b23:
-            return Promise { resolver in
-                AF.request(url).response {
-                    guard let url = $0.response?.url?.absoluteString,
-                          let u = BilibiliUrl(url: url)?.fUrl else {
-                        resolver.reject(VideoGetError.invalidLink)
-                        return
-                    }
-                    resolver.fulfill(u)
-                }
-            }
+			let res = await AF.request(url).serializingData().response
+			guard let url = res.response?.url?.absoluteString,
+					let u = BilibiliUrl(url: url)?.fUrl else {
+				throw VideoGetError.invalidLink
+			}
+			return u
         default:
-            return .value(url)
+            return url
         }
     }
     
-    func decodeUrl(_ url: String) -> Promise<YouGetJSON> {
+    func decodeUrl(_ url: String) async throws -> YouGetJSON {
         switch SupportSites(url: url) {
         case .biliLive:
-            return biliLive.decodeUrl(url)
+			try await biliLive.decodeUrl(url)
         case .douyu:
-            return douyu.decodeUrl(url)
+			try await douyu.decodeUrl(url)
         case .huya:
-            return huya.decodeUrl(url)
+			try await huya.decodeUrl(url)
         case .bilibili, .bangumi:
-            return bilibili.decodeUrl(url)
+			try await bilibili.decodeUrl(url)
         case .cc163:
-            return cc163.decodeUrl(url)
+			try await cc163.decodeUrl(url)
         case .douyin:
-            return douyin.decodeUrl(url)
+			try await douyin.decodeUrl(url)
         case .qqLive:
-            return qqLive.decodeUrl(url)
+			try await qqLive.decodeUrl(url)
         default:
-            return .init(error: VideoGetError.notSupported)
+            throw VideoGetError.notSupported
         }
     }
     
-    func prepareDanmakuFile(yougetJSON: YouGetJSON, id: String) -> Promise<()> {
-        let pref = Preferences.shared
-        
-        guard Processes.shared.iinaArchiveType() != .normal,
-              pref.enableDanmaku,
-              pref.livePlayer == .iina,
-              [.bilibili, .bangumi, .local].contains(yougetJSON.site),
-              yougetJSON.id != -1 else {
-                  Log("Ignore Danmaku download.")
-                  return .value(())
-        }
-  
-//        return self.downloadDMFile(yougetJSON.id, id: id)
-        
-        
-        return self.downloadDMFileV2(
-            cid: yougetJSON.id,
-            length: yougetJSON.duration,
-            id: id)
-    }
-    
-    func liveInfo(_ url: String, _ checkSupport: Bool = true) -> Promise<LiveInfo> {
+    func liveInfo(_ url: String, _ checkSupport: Bool = true) async throws -> LiveInfo {
         let site = SupportSites(url: url)
         switch site {
         case .biliLive:
-            return biliLive.liveInfo(url)
+			return try await biliLive.liveInfo(url)
         case .douyu:
-            return douyu.liveInfo(url)
+			return try await douyu.liveInfo(url)
         case .huya:
-            return huya.liveInfo(url)
+			return try await huya.liveInfo(url)
         case .bilibili, .bangumi:
-            return bilibili.liveInfo(url)
+			return try await bilibili.liveInfo(url)
         case .cc163:
-            return cc163.liveInfo(url)
+			return try await cc163.liveInfo(url)
         case .douyin:
-            return douyin.liveInfo(url)
+			return try await douyin.liveInfo(url)
         case .qqLive:
-            return qqLive.liveInfo(url)
+			return try await qqLive.liveInfo(url)
         default:
             if checkSupport {
-                return .init(error: VideoGetError.notSupported)
+                throw VideoGetError.notSupported
             } else {
                 var info = BiliLiveInfo()
                 info.isLiving = true
-                
-                return .value(info)
+				return info
             }
         }
     }
+	
+	func prepareDanmakuFile(yougetJSON: YouGetJSON, id: String) async throws {
+		let pref = Preferences.shared
+		
+		guard await Processes.shared.iina.archiveType != .normal,
+			  pref.enableDanmaku,
+			  pref.livePlayer == .iina,
+			  [.bilibili, .bangumi, .local].contains(yougetJSON.site),
+			  yougetJSON.id != -1 else {
+				  Log("Ignore Danmaku download.")
+				  return
+		}
+  
+//        return self.downloadDMFile(yougetJSON.id, id: id)
+		
+		try await downloadDMFileV2(
+			cid: yougetJSON.id,
+			length: yougetJSON.duration,
+			id: id)
+	}
     
-    func prepareVideoUrl(_ json: YouGetJSON, _ key: String) -> Promise<YouGetJSON> {
-        
-        guard json.id != -1 else {
-            return .value(json)
-        }
-        
-        switch json.site {
-        case .bilibili, .bangumi:
-            guard let stream = json.streams[key],
-                  stream.url == "" else {
-                return .value(json)
-            }
-            let qn = stream.quality
-            
-            return bilibili.bilibiliPlayUrl(yougetJson: json, false, true, qn)
-        case .biliLive:
-            guard let stream = json.streams[key],
-                  stream.quality != -1 else {
-                return .value(json)
-            }
-            let qn = stream.quality
-            
-            if stream.src.count > 0 {
-                return .value(json)
-            } else {
-                return biliLive.getBiliLiveJSON(json, qn)
-            }
-        case .douyu:
-            guard let stream = json.streams[key],
-                  stream.quality != -1 else {
-                return .value(json)
-            }
-            let rate = stream.rate
-            if stream.url != "" {
-                return .value(json)
-            } else {
-                let id = json.id
-                return douyu.getDouyuHtml("https://www.douyu.com/\(id)").then {
-                    self.douyu.getDouyuUrl(id, rate: rate, jsContext: $0.jsContext)
-                }.map {
-                    let url = $0.first {
-                        $0.1.rate == rate
-                    }?.1.url
-                    var re = json
-                    re.streams[key]?.url = url
-                    return re
-                }
-            }
-        default:
-            return .value(json)
-        }
-    }
+	func prepareVideoUrl(_ json: YouGetJSON, _ key: String) async throws -> YouGetJSON {
+		
+		guard json.id != -1 else {
+			return json
+		}
+		
+		switch json.site {
+		case .bilibili, .bangumi:
+			func registerDash(_ json: YouGetJSON) async -> YouGetJSON {
+				guard enableDash,
+					  let stream = json.streams[key],
+					  let content = stream.dashContent else {
+					return json
+				}
+				var json = json
+				json.streams[key]?.dashUrl = await Processes.shared.httpServer.registerDash(json.bvid, content: content)
+				return json
+			}
+			
+			guard let stream = json.streams[key],
+				  stream.url == "" else {
+				return await registerDash(json)
+			}
+			
+			let qn = stream.quality
+            let json = try await bilibili.biliShare.bilibiliPlayUrl(yougetJson: json, json.site == .bangumi, qn)
+			return await registerDash(json)
+		case .biliLive:
+			guard let stream = json.streams[key],
+				  stream.quality != -1 else {
+				return json
+			}
+			let qn = stream.quality
+			
+			if let url = stream.url,
+			   url != "" {
+				return json
+			} else {
+				var re = try await biliLive.getBiliLiveJSON(json, qn, with: .roomPlayInfo)
+				
+				func results() -> YouGetJSON? {
+					if let stream = re.streams[key],
+					   let url = stream.url,
+					   url != "" {
+						return re
+					} else {
+						return nil
+					}
+				}
+				
+				if let re = results() {
+					return re
+				}
+				
+				re = try await biliLive.getBiliLiveJSON(json, qn, with: .playUrl)
+				
+				if let re = results() {
+					return re
+				}
+				
+				throw VideoGetError.needLogin
+			}
+		case .douyu:
+			guard let stream = json.streams[key],
+				  stream.quality != -1 else {
+				return json
+			}
+			let rate = stream.rate
+			if stream.url != "" {
+				return json
+			} else {
+				let id = json.id
+				let html = try await douyu.getDouyuHtml("https://www.douyu.com/\(id)")
+				let urls = try await douyu.getDouyuUrl(id, rate: rate, jsContext: html.jsContext)
+				let url = urls.first {
+					$0.1.rate == rate
+				}?.1.url
+				var re = json
+				re.streams[key]?.url = url
+				return re
+			}
+		default:
+			return json
+		}
+	}
 }
 
 
 
 extension VideoDecoder {
     
-
-
-
-    
     // MARK: - Bilibili Danmaku
-    func downloadDMFile(_ cid: Int, id: String) -> Promise<()> {
-        return Promise { resolver in
-            AF.request("https://comment.bilibili.com/\(cid).xml").response { response in
-                if let error = response.error {
-                    resolver.reject(error)
-                }
-                self.saveDMFile(response.data, with: id)
-                resolver.fulfill(())
-            }
-        }
+    func downloadDMFile(_ cid: Int, id: String) async throws {
+		let data = try await AF.request("https://comment.bilibili.com/\(cid).xml").serializingData().value
+		VideoDecoder.saveDMFile(data, with: id)
     }
     
     
-    func downloadDMFileV2(cid: Int, length: Int, id: String) -> Promise<()> {
+    func downloadDMFileV2(cid: Int, length: Int, id: String) async throws {
         
 //        segment_index  6min
         
@@ -204,57 +220,70 @@ extension VideoDecoder {
         print("downloadDMFileV2", c)
         
         guard c < 1500 else {
-            return .value(())
+            return
         }
-        
-        return when(fulfilled: s.map {
-            getDanmakuContent(cid: cid, index: $0)
-        }).done {
-            
-            let element = try XMLElement(xmlString: #"<?xml version="1.0" encoding="UTF-8"?><i><chatserver>chat.bilibili.tv</chatserver><chatid>170102</chatid></i>"#)
-
-            let doc = XMLDocument(rootElement: element)
-
-            Array($0.joined()).map { dm -> String in
-                let s1 = ["\(Double(dm.progress) / 1000)",
-                          "\(dm.mode)",
-                          "\(dm.fontsize)",
-                          "\(dm.color)",
-                          "\(dm.ctime)",
-                          "\(dm.pool)",
-                          "\(dm.midHash)",
-                          "\(dm.id)"].joined(separator: ",")
-                var s2 = dm.content
-                        
-                s2 = s2.replacingOccurrences(of: "<", with: "&lt;")
-                s2 = s2.replacingOccurrences(of: ">", with: "&gt;")
-                s2 = s2.replacingOccurrences(of: "&", with: "&amp;")
-                s2 = s2.replacingOccurrences(of: "'", with: "&apos;")
-                s2 = s2.replacingOccurrences(of: "\"", with: "&quot;")
-                
-                s2 = s2.replacingOccurrences(of: "`", with: "&apos;")
-                
-                return "<d p=\"\(s1)\">\(s2)</d>"
-            }.forEach {
-                if let node = try? XMLElement(xmlString: $0) {
-                    element.addChild(node)
-                } else {
-                    Log("Invalid Bangumi Line: \($0)")
-                }
-            }
-            
-            self.saveDMFile(doc.xmlData, with: id)
-        }
+		
+		let dms = try await withThrowingTaskGroup(of: [DanmakuElem].self) { group in
+			for i in s {
+				group.addTask {
+					try await self.getDanmakuContent(cid: cid, index: i)
+				}
+			}
+			
+			var re = [DanmakuElem]()
+			
+			for try await e in group {
+				re.append(contentsOf: e)
+			}
+			
+			return re
+		}
+		
+		let element = try XMLElement(xmlString: #"<?xml version="1.0" encoding="UTF-8"?><i><chatserver>chat.bilibili.tv</chatserver><chatid>170102</chatid></i>"#)
+		
+		let doc = XMLDocument(rootElement: element)
+		
+		dms.map { dm -> String in
+			let s1 = ["\(Double(dm.progress) / 1000)",
+					  "\(dm.mode)",
+					  "\(dm.fontsize)",
+					  "\(dm.color)",
+					  "\(dm.ctime)",
+					  "\(dm.pool)",
+					  "\(dm.midHash)",
+					  "\(dm.id)"].joined(separator: ",")
+			var s2 = dm.content
+			
+			s2 = s2.replacingOccurrences(of: "<", with: "&lt;")
+			s2 = s2.replacingOccurrences(of: ">", with: "&gt;")
+			s2 = s2.replacingOccurrences(of: "&", with: "&amp;")
+			s2 = s2.replacingOccurrences(of: "'", with: "&apos;")
+			s2 = s2.replacingOccurrences(of: "\"", with: "&quot;")
+			
+			s2 = s2.replacingOccurrences(of: "`", with: "&apos;")
+			
+			return "<d p=\"\(s1)\">\(s2)</d>"
+		}.forEach {
+			if let node = try? XMLElement(xmlString: $0) {
+				element.addChild(node)
+			} else {
+				Log("Invalid Bangumi Line: \($0)")
+			}
+		}
+		
+		VideoDecoder.saveDMFile(doc.xmlData, with: id)
     }
     
-    func saveDMFile(_ data: Data?, with id: String) {
-        guard let path = dmPath(id) else { return }
-
+    static func saveDMFile(_ data: Data?, with id: String) {
+		guard let path = VideoDecoder.dmPath(id) else { return }
+        var p = path
+        p.deleteLastPathComponent()
+        try? FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: path, contents: data, attributes: nil)
         Log("Saved DM in \(path)")
     }
     
-    func dmPath(_ id: String) -> String? {
+    static func dmPath(_ id: String) -> String? {
         guard let bundleIdentifier = Bundle.main.bundleIdentifier,
             var filesURL = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
             return nil
@@ -269,29 +298,11 @@ extension VideoDecoder {
         return filesURL.path
     }
     
-    func getDanmakuContent(cid: Int, index: Int) -> Promise<([DanmakuElem])> {
-        return Promise { resolver in
-            let u = "https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=\(cid)&segment_index=\(index)"
-            
-            AF.request(u).response { response in
-                if let error = response.error {
-                    resolver.reject(error)
-                    return
-                }
-
-                guard let d = response.data else {
-                    resolver.fulfill([])
-                    return
-                }
-                
-                do {
-                    let re = try DmSegMobileReply(serializedData: d)
-                    resolver.fulfill(re.elems)
-                } catch let error {
-                    resolver.reject(error)
-                }
-            }
-        }
+    func getDanmakuContent(cid: Int, index: Int) async throws -> [DanmakuElem] {
+		let u = "https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=\(cid)&segment_index=\(index)"
+		
+		let data = try await AF.request(u).serializingData().value
+		return try DmSegMobileReply(serializedBytes: data).elems
     }
 }
 
@@ -315,5 +326,6 @@ enum VideoGetError: Error {
     case cantWatch
     case notFountData
     case needVip
+	case needLogin
     case needPassWork
 }

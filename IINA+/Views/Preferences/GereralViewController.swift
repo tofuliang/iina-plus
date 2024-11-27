@@ -10,7 +10,7 @@ import Cocoa
 
 class GereralViewController: NSViewController, NSMenuDelegate {
     
-    @IBOutlet var fontSelectorButton: NSButton!
+	@IBOutlet weak var pluginButton: NSButton!
     @IBOutlet weak var playerPopUpButton: NSPopUpButton!
     @IBOutlet var playerTextField: NSTextField!
     
@@ -19,7 +19,7 @@ class GereralViewController: NSViewController, NSMenuDelegate {
     
     @IBAction func testInBrowser(_ sender: NSButton) {
         let port = pref.dmPort
-        let u = "http://127.0.0.1:\(port)/danmaku/index.htm"
+        let u = "http://127.0.0.1:\(port)/danmaku/test.htm"
         guard let url = URL(string: u) else { return }
         
         NSWorkspace.shared.open(url)
@@ -30,20 +30,18 @@ class GereralViewController: NSViewController, NSMenuDelegate {
     
     override func viewDidLoad() {
         super.viewDidLoad()
-        initFontSelector()
         initMenu(for: playerPopUpButton)
-        
-        let proc = Processes.shared
-        portTextField.isEnabled = pref.enableDanmaku
-        && ((proc.iinaArchiveType() == .danmaku && proc.iinaBuildVersion() > 16) || proc.iinaArchiveType() == .plugin)
-            
+		portTextField.isEnabled = false
+		initDanmakuPrefs()
+		initPluginInfo()
     }
-    
+
+	
     func menuDidClose(_ menu: NSMenu) {
         switch menu {
         case playerPopUpButton.menu:
             pref.livePlayer = LivePlayer(index: playerPopUpButton.indexOfSelectedItem)
-            initPlayerVersion()
+			initPlayerVersion()
         default:
             break
         }
@@ -58,82 +56,81 @@ class GereralViewController: NSViewController, NSMenuDelegate {
             break
         }
     }
+	
+	func initDanmakuPrefs() {
+		Task { @MainActor in
+			let iina = Processes.shared.iina
+			let archiveType = await iina.archiveType
+			let buildVersion = await iina.buildVersion
+			
+			let allowDanmaku = (archiveType == .danmaku && buildVersion > 16) || archiveType == .plugin
+			
+			portTextField.isEnabled = pref.enableDanmaku && allowDanmaku
+		}
+	}
+	
+	func initPluginInfo() {
+		let pluginState = IINAApp.pluginState()
+		
+		switch pluginState {
+		case .ok(let version):
+			pluginButton.title = version
+		case .needsUpdate(let plugin):
+			pluginButton.title = "Update \(plugin.version) to \(IINAApp.internalPluginVersion)"
+		case .needsInstall:
+			pluginButton.title = "Install"
+		case .newer(let plugin):
+			pluginButton.title = "\(plugin.version) is newer"
+		case .isDev:
+			pluginButton.title = "DEV"
+		case .multiple:
+			pluginButton.title = "Update"
+		case .error(let error):
+			Log("list all plugins error \(error)")
+			pluginButton.title = "Error"
+		}
+	}
     
     func initPlayerVersion() {
-        let proc = Processes.shared
-        var s = ""
-        switch pref.livePlayer {
-        case .iina:
-            switch proc.iinaArchiveType() {
-            case .danmaku:
-                s = "danmaku"
-            case .plugin:
-                s = "plugin"
-            case .normal:
-                s = "official"
-            case .none:
-                s = "not found"
-            }
-        case .mpv:
-            s = proc.mpvVersion()
-        }
-        playerTextField.stringValue = s
+		Task {
+			playerTextField.stringValue = await playerText()
+		}
     }
+	
+	func playerText() async -> String {
+		let proc = Processes.shared
+		let iina = Processes.shared.iina
+		var s = ""
+		switch pref.livePlayer {
+		case .iina:
+			switch await iina.archiveType {
+			case .danmaku:
+				s = "danmaku"
+			case .plugin where await iina.buildVersion >= IINAApp.minIINABuild:
+				s = "official"
+			case .plugin:
+				s = "plugin"
+			case .normal:
+				s = "official"
+			case .none:
+				s = "not found"
+			}
+		case .mpv:
+			s = proc.mpvVersion()
+		}
+		return s
+	}
     
     override func prepare(for segue: NSStoryboardSegue, sender: Any?) {
-        guard let vc = segue.destinationController as? FontSelectorViewController else { return }
-        checkFontWeight()
-        
-        let name = pref.danmukuFontFamilyName
-        vc.delegate = self
-        vc.families = NSFontManager.shared.availableFontFamilies
-        vc.family = name
-        vc.styles = fontWeights(ofFontFamily: name)
-        vc.style = pref.danmukuFontWeight
-        vc.size = pref.danmukuFontSize
-    }
-    
-    func fontWeights(ofFontFamily name: String) -> [String] {
-        guard let members = NSFontManager.shared.availableMembers(ofFontFamily: name) else { return [] }
-        
-        let names = members.filter {
-            $0.count == 4
-        }.compactMap {
-            $0[1] as? String
-        }
-        
-        return names
-    }
-    
-    func initFontSelector() {
-        checkFontWeight()
-        
-        let name = pref.danmukuFontFamilyName
-        let weight = pref.danmukuFontWeight
-        
-//        let size = pref.danmukuFontSize
-//        fontSelectorButton.title = "\(name) - \(weight) \(size)px"
-        fontSelectorButton.title = "\(name) - \(weight)"
-    }
-    
-    func checkFontWeight() {
-        
-        let name = pref.danmukuFontFamilyName
-        let weight = pref.danmukuFontWeight
-        let weights = fontWeights(ofFontFamily: name)
-        if !weights.contains(weight),
-           let w = weights.first {
-            pref.danmukuFontWeight = w
-        }
+		if let vc = segue.destinationController as? PluginViewController {
+			vc.updatePlugin = {
+				self.initPluginInfo()
+			}
+		}
     }
     
 }
 
-extension GereralViewController: FontSelectorDelegate {
-    func fontDidUpdated() {
-        initFontSelector()
-    }
-}
 
 
 enum LivePlayer: String {

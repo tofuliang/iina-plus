@@ -11,21 +11,20 @@ import Alamofire
 import Marshal
 import SocketRocket
 import Gzip
-import JavaScriptCore
+@preconcurrency import JavaScriptCore
 import CryptoSwift
-import PromiseKit
-import PMKAlamofire
 import Marshal
 import SDWebImage
 
 protocol DanmakuDelegate {
-    func send(_ event: DanmakuEvent, sender: Danmaku)
+    @MainActor func send(_ event: DanmakuEvent, sender: Danmaku)
 }
 
 protocol DanmakuSubDelegate {
-    func send(_ event: DanmakuEvent)
+    @MainActor func send(_ event: DanmakuEvent)
 }
 
+@MainActor
 class Danmaku: NSObject {
     var socket: SRWebSocket? = nil
     var liveSite: SupportSites = .unsupported
@@ -35,20 +34,9 @@ class Danmaku: NSObject {
     
     private var heartBeatCount = 0
     
-    let biliLiveServer = URL(string: "wss://broadcastlv.chat.bilibili.com/sub")
-    var biliLiveIDs = (rid: "", token: "")
+    let biliLiveServer = URL(string: "wss://broadcastlv.chat.bilibili.com:443/sub")
+	var biliLiveIDs = (rid: "", token: "", uid: 1)
     var bililiveEmoticons = [BiliLiveEmoticon]()
-    
-    struct BiliLiveDanmuMsg: Decodable {
-        struct ResultObj: Decodable {
-            let msg: String?
-            init(from decoder: Decoder) throws {
-                let unkeyedContainer = try decoder.singleValueContainer()
-                msg = try? unkeyedContainer.decode(String.self)
-            }
-        }
-        var info: [ResultObj]
-    }
     
     let douyuBlockList = [
         "#挑战666#",
@@ -86,6 +74,7 @@ class Danmaku: NSObject {
 
     let cc163Server = URL(string: "wss://weblink.cc.163.com")
     
+    var socketClosed = false
     
     var douyinDM: DouYinDM?
     
@@ -101,97 +90,96 @@ class Danmaku: NSObject {
             } else {
                 Log("Not found huya.js.")
             }
-        case .douyin:
-            douyinDM = .init()
         default:
             break
         }
     }
     
     func stop() {
+		Log("Stop Danmaku")
+		
         socket?.close()
         socket = nil
         timer?.cancel()
         douyuSavedData = Data()
         heartBeatCount = 0
         
-        douyinDM?.stop()
-        douyinDM = nil
-    }
-    
-    func prepareBlockList() throws {
-        guard let resourcePath = Bundle.main.resourcePath else { return }
-        let targetPath = resourcePath + "/Danmaku/iina-plus-blockList.xml"
-        if FileManager.default.fileExists(atPath: targetPath) {
-            try FileManager.default.removeItem(atPath: targetPath)
-        }
-        switch Preferences.shared.dmBlockList.type {
-        case .none:
-            return
-        case .basic:
-            let basicList = resourcePath + "/Block-List-Basic.xml"
-            try FileManager.default.copyItem(atPath: basicList, toPath: targetPath)
-        case .plus:
-            let basicList = resourcePath + "/Block-List-Plus.xml"
-            try FileManager.default.copyItem(atPath: basicList, toPath: targetPath)
-        case .custom:
-            FileManager.default.createFile(atPath: targetPath, contents: Preferences.shared.dmBlockList.customBlockListData, attributes: nil)
-        }
+		Task {
+			douyinDM?.stop()
+			douyinDM = nil
+		}
     }
 
+	func loadDM() {
+		Task {
+			do {
+				try await loadDanmaku()
+			} catch let error {
+				Log("loadDM failed, \(error)")
+			}
+		}
+	}
+	
     
-    func loadDM() {
+    func loadDanmaku() async throws {
         guard let url = URL(string: self.url) else { return }
         let roomID = url.lastPathComponent
         let videoDecoder = Processes.shared.videoDecoder
         switch liveSite {
         case .biliLive:
-            socket = .init(url: biliLiveServer!)
-            socket?.delegate = self
-            
-            bililiveRid(roomID).get {
-                self.biliLiveIDs.rid = $0
-            }.then {
-                when(fulfilled: self.bililiveToken($0),
-                     self.bililiveEmoticons($0))
-            }.done {
-                self.biliLiveIDs.token = $0.0
-                self.bililiveEmoticons = $0.1
-                self.socket?.open()
-            }.catch {
-                Log("can't find bilibili ids \($0).")
-            }
+
+			let rid = try await self.bililiveRid(roomID)
+			let token = try await bililiveToken(rid)
+			let emoticons = try await bililiveEmoticons(rid)
+			let uid = try await Bilibili().getUid()
+			
+			await MainActor.run {
+				biliLiveIDs.rid = rid
+				biliLiveIDs.token = token
+				bililiveEmoticons = emoticons
+				biliLiveIDs.uid = uid
+				socket = .init(url: biliLiveServer!)
+				socket?.delegate = self
+				socket?.open()
+			}
         case .douyu:
             
             Log("Processes.shared.videoDecoder.getDouyuHtml")
-            
-            videoDecoder.douyu.getDouyuHtml(url.absoluteString).done {
-                self.initDouYuSocket($0.roomId)
-                }.catch {
-                    Log($0)
-            }
+			
+			let info = try await videoDecoder.douyu.getDouyuHtml(url.absoluteString)
+            initDouYuSocket(info.roomId)
+			
         case .huya:
-            AF.request(url.absoluteString).responseString().done {
-                let js = $0.string.subString(from: "var TT_ROOM_DATA = ", to: "};")
-                let roomData = (js + "}").data(using: .utf8) ?? Data()
-                let roomInfo: JSONObject = try JSONParser.JSONObjectWithData(roomData)
-                
-                if let id: String = try? roomInfo.value(for: "id"),
-                    let uid = Int(id) {
-                    self.huyaAnchorUid = uid
-                } else {
-                    self.huyaAnchorUid = try roomInfo.value(for: "id")
-                }
-                
-                self.socket = .init(url: self.huyaServer!)
-                self.socket?.delegate = self
-                self.socket?.open()
-            }.catch {
-                Log("Init huya AnchorUid failed \($0).")
-            }
+			let str = try await AF.request(url.absoluteString).serializingString().value
+			let js = str.subString(from: "var TT_ROOM_DATA = ", to: "};")
+			let roomData = (js + "}").data(using: .utf8) ?? Data()
+			let roomInfo: JSONObject = try JSONParser.JSONObjectWithData(roomData)
+
+			try await MainActor.run {
+				if let id: String = try? roomInfo.value(for: "id"),
+					let uid = Int(id) {
+					self.huyaAnchorUid = uid
+				} else {
+					self.huyaAnchorUid = try roomInfo.value(for: "id")
+				}
+				
+				self.socket = .init(url: self.huyaServer!)
+				self.socket?.delegate = self
+				self.socket?.open()
+			}
+
         case .douyin:
-            douyinDM?.start(self.url)
-            douyinDM?.delegate = self
+			await MainActor.run {
+				douyinDM = .init()
+				douyinDM?.requestPrepared = { ur in
+					self.socket = .init(urlRequest: ur)
+					self.socket?.delegate = self
+					self.socket?.open()
+				}
+				douyinDM?.start(self.url)
+				socketClosed = false
+				startTimer()
+			}
         default:
             break
         }
@@ -206,6 +194,11 @@ class Danmaku: NSObject {
     }
     
     private func sendDM(_ event: DanmakuEvent) {
+        if event.method == .sendDM,
+           let dms = event.dms,
+           dms.count == 0 {
+            return
+        }
         delegate?.send(event, sender: self)
     }
     
@@ -232,181 +225,62 @@ class Danmaku: NSObject {
     private func startTimer() {
         timer?.cancel()
         timer = nil
-        timer = DispatchSource.makeTimerSource(flags: [], queue: timerQueue)
-        if let timer = timer {
-            timer.schedule(deadline: .now(), repeating: .seconds(30))
-            timer.setEventHandler {
-                do {
-                    switch self.liveSite {
-                    case .biliLive:
-                        let data = self.pack(format: "NnnNN", values: [16, 16, 1, 2, 1]) as Data
-                        try self.socket?.send(data: data)
-                    case .douyu:
-                        //                        let keeplive = "type@=keeplive/tick@=\(Int(Date().timeIntervalSince1970))/"
-                        let keeplive = "type@=mrkl/"
-                        let data = self.douyuSocketFormatter(keeplive)
-                        try self.socket?.send(data: data)
-                    case .huya:
-                        let result = self.huyaJSContext?.evaluateScript("new Uint8Array(sendHeartBeat());")
-                        let data = Data(result?.toArray() as? [UInt8] ?? [])
-                        self.sendMsg(data)
-                    default:
-                        try self.socket?.sendPing(Data())
-                    }
-                    self.heartBeatCount += 1
-                    if self.heartBeatCount > 5 {
-                        self.stop()
-                        self.loadDM()
-                        Log("HeartBeatCount exceed, restart.")
-                    }
-                } catch let error {
-                    if (error as NSError).code == 2134 {
-                        self.stop()
-                        self.loadDM()
-                        Log("Danmaku Error 2134, restart.")
-                    } else {
-                        Log(error)
-                    }
-                }
-            }
-            timer.resume()
+        timer = DispatchSource.makeTimerSource(flags: [], queue: .main)
+        guard let timer = timer else {
+            return
         }
-    }
-    
-
-    
-    
-    func bililiveRid(_ roomID: String) -> Promise<(String)> {
-        return Promise { resolver in
-            AF.request("https://api.live.bilibili.com/room/v1/Room/get_info?room_id=\(roomID)").response {
-                do {
-                    let json = try JSONParser.JSONObjectWithData($0.data ?? Data())
-                    let id: Int = try json.value(for: "data.room_id")
-                    resolver.fulfill("\(id)")
-                } catch let error {
-                    resolver.reject(error)
-                }
-            }
-        }
-    }
-    
-    func bililiveToken(_ rid: String) -> Promise<(String)> {
-        return Promise { resolver in
-            AF.request("https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?id=\(rid)&type=0").response {
-                do {
-                    let json = try JSONParser.JSONObjectWithData($0.data ?? Data())
-                    let token: String = try json.value(for: "data.token")
-                    resolver.fulfill(token)
-                } catch let error {
-                    resolver.reject(error)
-                }
-            }
-        }
-    }
-    
-    struct BiliLiveEmoticon: Unmarshaling {
-        let emoji: String
-        let url: String
-        let width: Int
-        let height: Int
-        let identity: Int
-        let emoticonUnique: String
-        let emoticonId: Int
         
-        var emoticonData: Data?
+        let interval: DispatchTimeInterval = liveSite == .douyin ? .seconds(15) : .seconds(30)
         
-        init(object: MarshaledObject) throws {
-            emoji = try object.value(for: "emoji")
-            let u: String = try object.value(for: "url")
-            url = u.replacingOccurrences(of: "http://", with: "https://")
-            width = try object.value(for: "width")
-            height = try object.value(for: "height")
-            identity = try object.value(for: "identity")
-            emoticonUnique = try object.value(for: "emoticon_unique")
-            emoticonId = try object.value(for: "emoticon_id")
-        }
-    }
-    
-    
-    func bililiveEmoticons(_ rid: String) -> Promise<([BiliLiveEmoticon])> {
-        return Promise { resolver in
-            AF.request("https://api.live.bilibili.com/xlive/web-ucenter/v2/emoticon/GetEmoticons?platform=pc&room_id=\(rid)").response {
-                
-                struct BiliLiveEmoticonData: Unmarshaling {
-                    let emoticons: [BiliLiveEmoticon]
-                    let pkgId: Int
-                    let pkgName: String
-                    init(object: MarshaledObject) throws {
-                        emoticons = try object.value(for: "emoticons")
-                        pkgId = try object.value(for: "pkg_id")
-                        pkgName = try object.value(for: "pkg_name")
-                    }
-                }
-                
-                do {
-                    let json = try JSONParser.JSONObjectWithData($0.data ?? Data())
-                    let emoticonData: [BiliLiveEmoticonData] = try json.value(for: "data.data")
-                    var emoticons = emoticonData.flatMap {
-                        $0.emoticons
-                    }
+        timer.schedule(deadline: .now(), repeating: interval)
+        timer.setEventHandler {
+            do {
+                switch self.liveSite {
+                case .biliLive:
+                    let data = self.pack(format: "NnnNN", values: [16, 16, 1, 2, 1]) as Data
+                    try self.socket?.send(data: data)
+                case .douyu:
+                    //                        let keeplive = "type@=keeplive/tick@=\(Int(Date().timeIntervalSince1970))/"
+                    let keeplive = "type@=mrkl/"
+                    let data = self.douyuSocketFormatter(keeplive)
+                    try self.socket?.send(data: data)
+                case .huya:
+                    let result = self.huyaJSContext?.evaluateScript("new Uint8Array(sendHeartBeat());")
+                    let data = Data(result?.toArray() as? [UInt8] ?? [])
+                    self.sendMsg(data)
                     
-                    when(fulfilled: emoticons.enumerated().map { item -> Promise<()> in
-                        let key = "BiliLive_Emoticons_" + item.element.emoticonUnique
-                        if let image = SDImageCache.shared.imageFromCache(forKey: key) {
-                            emoticons[item.offset].emoticonData = image.sd_imageData()
-                            return .value
-                        } else {
-                            return AF.request(item.element.url).responseData().done {
-                                emoticons[item.offset].emoticonData = $0.data
-                                SDImageCache.shared.store(NSImage(data: $0.data), forKey: key)
-                            }
-                        }
-                    }).done {
-                        resolver.fulfill(emoticons)
-                    }.catch {
-                        resolver.reject($0)
+                case .douyin:
+                    guard let socket = self.socket else { return }
+                    if self.socketClosed {
+                        Log("Reconnect douyin dm")
+                        self.stop()
+                        self.loadDM()
+                        return
                     }
-                } catch let error {
-                    resolver.reject(error)
+                    var pf = DouYinPushFrame()
+                    pf.payloadType = "hb"
+                    try socket.sendPing(pf.serializedData())
+                default:
+                    try self.socket?.sendPing(Data())
+                }
+                self.heartBeatCount += 1
+                if self.heartBeatCount > 5 {
+                    self.stop()
+                    self.loadDM()
+                    Log("HeartBeatCount exceed, restart.")
+                }
+            } catch let error {
+                if (error as NSError).code == 2134 {
+                    self.stop()
+                    self.loadDM()
+                    Log("Danmaku Error 2134, restart.")
+                } else {
+                    Log(error)
                 }
             }
         }
+        timer.resume()
     }
-    
-    /*
-    func testedBilibiliAPI() {
-        let p = ["aid": 31027408,
-                 "appkey": "1d8b6e7d45233436",
-                 "build": 5310000,
-                 "mobi_app": "android",
-                 "oid": 54186450,
-                 "plat":2,
-                 "platform": "android",
-                 "ps": 0,
-                 "ts": 1536407932,
-                 "type": 1,
-                 "sign": 0] as [String : Any]
-        AF.request("https://api.bilibili.com/x/v2/dm/list.so", parameters: p).response { re in
-            let data = re.data
-            let head = data.subdata(in: 0..<4)
-            let endIndex = Int(CFSwapInt32(head.withUnsafeBytes { (ptr: UnsafePointer<UInt32>) in ptr.pointee })) + 4
-            let d1 = data.subdata(in: 4..<endIndex)
-            
-            let d2 = data.subdata(in: endIndex..<data.endIndex)
-            
-            let d3 = try! d2.gunzipped()
-            
-            let str1 = String(data: d1, encoding: .utf8)
-            let str2 = String(data: d3, encoding: .utf8)
-            
-            //            FileManager.default.createFile(atPath: "/Users/xjbeta/Downloads/d1", contents: d1, attributes: nil)
-            //
-            //            FileManager.default.createFile(atPath: "/Users/xjbeta/Downloads/d2", contents: d3, attributes: nil)
-            
-        }
-    }
- 
-     */
     
 }
 
@@ -417,9 +291,11 @@ extension Danmaku: SRWebSocketDelegate {
 
         switch liveSite {
         case .biliLive:
-            let json = """
-            {"uid":0,"roomid":\(biliLiveIDs.rid),"protover":2,"platform":"web","clientver":"1.14.0","type":2,"key":"\(biliLiveIDs.token)"}
-            """
+			let buvid = UUID().uuidString + "\(Int.random(in: 10000...90000))" + "infoc"
+			let key = biliLiveIDs.token
+			
+			let json = "{\"uid\":\(biliLiveIDs.uid),\"roomid\":\(biliLiveIDs.rid),\"protover\":2,\"buvid\":\"\(buvid)\",\"platform\":\"web\",\"type\":2,\"key\":\"\(key)\"}"
+						
             //0000 0060 0010 0001 0000 0007 0000 0001
             let data = pack(format: "NnnNN", values: [json.count + 16, 16, 1, 7, 1])
             data.append(json.data(using: .utf8)!)
@@ -453,11 +329,28 @@ new Uint8Array(sendRegisterGroups(["live:\(id)", "chat:\(id)"]));
         case .biliLive:
             timer?.cancel()
             timer = nil
+        case .douyin:
+            socketClosed = true
         default:
             break
         }
         delegate?.send(.init(method: .liveDMServer, text: "error"), sender: self)
     }
+	
+	func webSocket(_ webSocket: SRWebSocket, didReceivePong pongData: Data?) {
+		switch liveSite {
+		case .douyin:
+			guard let data = pongData,
+				  let str = String(data: data, encoding: .utf8),
+				  str.hasSuffix("hb") else {
+				return
+			}
+			
+			heartBeatCount = 0
+		default:
+			break
+		}
+	}
     
     func webSocket(_ webSocket: SRWebSocket, didReceiveMessageWith data: Data) {
         switch liveSite {
@@ -483,10 +376,10 @@ new Uint8Array(sendRegisterGroups(["live:\(id)", "chat:\(id)"]));
                     return nil
                 }
                 d = d.subdata(in: 16..<count)
+				
                 do {
-                    d = try d.gunzipped()
-                    return d
-                }  catch let error {
+					return try d.gunzipped()
+                } catch let error {
                     if let str = String(data: data, encoding: .utf8), str.contains("cmd") {
                         return nil
                     } else if let str = String(data: d, encoding: .utf8), str.contains("cmd") {
@@ -497,7 +390,7 @@ new Uint8Array(sendRegisterGroups(["live:\(id)", "chat:\(id)"]));
                 }
                 return nil
             }
-            
+			
             
             var datas: [Data] = []
             guard var d = checkIntegrity(data) else { return }
@@ -512,25 +405,9 @@ new Uint8Array(sendRegisterGroups(["live:\(id)", "chat:\(id)"]));
                 }
             }
             
-            datas.forEach { data in
-                if let s = String(data: data, encoding: .utf8)?.subString(from: "\"emoticon_unique\":\"", to: "\","),
-                   let emoticon = self.bililiveEmoticons.first(where: { $0.emoticonUnique == s }) {
-                    
-                    guard let base64 = emoticon.emoticonData?.base64EncodedString(),
-                            base64.count > 0 else { return }
-                    
-                    let ext = NSString(string: emoticon.url.lastPathComponent).pathExtension
-                    
-                    let size = Int(emoticon.width / 2) > 125 ? 125 : Int(emoticon.width / 2)
-                    
-                    sendDM(.init(
-                        method: .sendDM,
-                        text: "",
-                        imageSrc: "data:image/\(ext);base64," + base64,
-                        imageWidth: size))
-                } else if let s = (try? JSONDecoder().decode(BiliLiveDanmuMsg.self, from: data))?.info.compactMap ({ $0.msg }).first {
-                    sendDM(.init(method: .sendDM, text: s))
-                }
+            let dms = try? datas.compactMap(decodeBiliLiveDM(_:))
+            if let dms, dms.count > 0 {
+                sendDM(.init(method: .sendDM, text: "", dms: dms))
             }
         case .huya:
             let bytes = [UInt8](data)
@@ -545,6 +422,7 @@ new Uint8Array(sendRegisterGroups(["live:\(id)", "chat:\(id)"]));
                 self.delegate?.send(.init(method: .liveDMServer, text: ""), sender: self)
                 return
             } else if str.starts(with: "EWebSocketCommandType") {
+                guard str != "EWebSocketCommandType.EWSCmdS2C_MsgPushReq_V2" else { return }
                 Log("huya websocket info \(str)")
                 return
             } else if str == "EWebSocketCommandType.EWSCmdS2C_HeartBeatRsp" {
@@ -563,8 +441,8 @@ new Uint8Array(sendRegisterGroups(["live:\(id)", "chat:\(id)"]));
                msg.iUri == 1400,
                msg.iProtocolType == 2,
                !huyaBlockList.contains(where: msg.sMsg.contains) {
-               
-                sendDM(.init(method: .sendDM, text: msg.sMsg))
+                let dm = DanmakuComment(text: msg.sMsg)
+                sendDM(.init(method: .sendDM, text: "", dms: [dm]))
             }
             
             
@@ -674,33 +552,111 @@ new Uint8Array(sendRegisterGroups(["live:\(id)", "chat:\(id)"]));
                 }
             }
             
-            msgDatas.compactMap {
-                String(data: $0, encoding: .utf8)
-                }.forEach {
-                    if $0.starts(with: "type@=chatmsg") {
-                        let dm = $0.subString(from: "txt@=", to: "/cid@=")
-                        guard !douyuBlockList.contains(where: dm.contains) else {
-                            return
-                        }
-                        DispatchQueue.main.async {
-                            self.sendDM(.init(method: .sendDM, text: dm))
-                        }
-                    } else if $0.starts(with: "type@=error") {
-                        Log("douyu socket disconnected: \($0)")
-                        self.delegate?.send(.init(method: .liveDMServer, text: "error"), sender: self)
-                        socket?.close()
-                    } else if $0.starts(with: "type@=loginres") {
-                        Log("douyu content success")
-                        self.delegate?.send(.init(method: .liveDMServer, text: ""), sender: self)
-                    } else if $0 == "type@=mrkl" {
-                        Log("Danmaku HeartBeatRsp")
-                        heartBeatCount = 0
+            var dms = [DanmakuComment]()
+            
+            msgDatas.forEach {
+                guard let msg = String(data: $0, encoding: .utf8) else { return }
+                if msg.starts(with: "type@=chatmsg") {
+					
+					if !msg.contains("dms@=") {
+						// filter strange dm
+						return
+					}
+					
+                    let dm = msg.split(separator: "/").filter {
+                        $0.starts(with: "txt@=")
+                    }.filter {
+                        !douyuBlockList.contains(where: $0.contains)
+                    }.first
+                    
+                    if let dm = dm {
+                        dms.append(.init(text: String(dm.dropFirst("txt@=".count))))
                     }
+                } else if msg.starts(with: "type@=error") {
+                    Log("douyu socket disconnected: \(msg)")
+                    self.delegate?.send(.init(method: .liveDMServer, text: "error"), sender: self)
+                    socket?.close()
+                } else if msg.starts(with: "type@=loginres") {
+                    Log("douyu content success")
+                    self.delegate?.send(.init(method: .liveDMServer, text: ""), sender: self)
+                } else if msg == "type@=mrkl" {
+                    Log("Danmaku HeartBeatRsp")
+                    heartBeatCount = 0
+                }
             }
+            
+
+            sendDM(.init(method: .sendDM, text: "", dms: dms))
+        case .douyin:
+            do {
+				let re = try DouYinResponse(serializedBytes: data)
+				let ree = try Douyin_Response(serializedBytes: re.data.gunzipped())
+                
+				let dms = ree.messagesList.filter {
+                    $0.method == "WebcastChatMessage"
+                }.compactMap {
+					try? Douyin_ChatMessage(serializedBytes: $0.payload)
+                }.map {
+                    DanmakuComment(text: $0.content)
+                }
+                
+                sendDM(.init(method: .sendDM, text: "", dms: dms))
+                
+                guard ree.needAck else { return }
+                
+                var pf = DouYinPushFrame()
+                pf.payloadType = "ack"
+                pf.logid = re.wssPushLogID
+                
+                let payload: [UInt8] = {
+                    var t = [UInt8]()
+                    func push(_ e: UInt32) {
+                        t.append(UInt8(e))
+                    }
+                    
+                    ree.internalExt.unicodeScalars.forEach {
+                        let e = $0.value
+                        switch e {
+                        case _ where e < 128:
+                            push(e)
+                        case _ where e < 2048:
+                            push(192 + (e >> 6))
+                            push(128 + (63 & e))
+                        case _ where e < 65536:
+                            push(224 + (e >> 12))
+                            push(128 + (e >> 6 & 63))
+                            push(128 + (63 & e))
+                        default:
+                            break
+                        }
+                    }
+                    
+                    return t
+                }()
+                
+                pf.data = Data(payload)
+                
+                try? webSocket.send(data: pf.serializedData())
+                
+            } catch let error {
+                Log("\(error)")
+            }
+            
         default:
             break
-        }
-        
+        }   
+    }
+    
+    func webSocket(_ webSocket: SRWebSocket, didFailWithError error: Error) {
+        Log(error)
+
+		let err = error as NSError
+		
+		if err.domain == SRWebSocketErrorDomain,
+		err.code == 2133,
+		liveSite == .douyin {
+			socketClosed = true
+		}
     }
     
     func pack(format: String, values: [Int]) -> NSMutableData {

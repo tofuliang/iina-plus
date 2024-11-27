@@ -8,13 +8,14 @@
 
 import Cocoa
 
-class Preferences: NSObject {
+final class Preferences: NSObject, Sendable {
     static let shared = Preferences()
     
     private override init() {
     }
 
-    let prefs = UserDefaults.standard
+	nonisolated(unsafe) let prefs = UserDefaults.standard
+	
     let keys = PreferenceKeys.self
     
     var livePlayer: LivePlayer {
@@ -59,20 +60,6 @@ class Preferences: NSObject {
         }
         set {
             defaultsSet(newValue, forKey: .dmBlockType)
-        }
-    }
-    
-    var dmBlockList: BlockList {
-        get {
-            if let data = defaults(.dmBlockList) as? Data,
-                let dmBlockList = BlockList(data: data) {
-                return dmBlockList
-            } else {
-                return BlockList()
-            }
-        }
-        set {
-            defaultsSet(newValue.encode(), forKey: .dmBlockList)
         }
     }
     
@@ -129,8 +116,7 @@ class Preferences: NSObject {
     
     @objc dynamic var dmPort: Int {
         get {
-            
-            if Processes.shared.iinaBuildVersion() > 16 {
+			if IINAApp.getBuildVersion() > 16 {
                 return defaults(.dmPort) as? Int ?? 19080
             } else {
                 return 19080
@@ -163,7 +149,7 @@ class Preferences: NSObject {
     
     @objc dynamic var stateReplay: NSColor {
         get {
-            return colorDecode(defaults(.stateReplay)) ?? .systemBlue
+            return colorDecode(defaults(.stateReplay)) ?? .controlAccentColor
         }
         set {
             defaultsSet(colorEncode(newValue), forKey: .stateReplay)
@@ -178,6 +164,15 @@ class Preferences: NSObject {
             defaultsSet(colorEncode(newValue), forKey: .stateUnknown)
         }
     }
+	
+	@objc dynamic var bilibiliHTMLDecoder: Bool {
+		get {
+			return defaults(.bilibiliHTMLDecoder) as? Bool ?? false
+		}
+		set {
+			defaultsSet(newValue, forKey: .bilibiliHTMLDecoder)
+		}
+	}
     
     @objc dynamic var bilibiliCodec: Int {
         get {
@@ -196,6 +191,25 @@ class Preferences: NSObject {
             defaultsSet(newValue, forKey: .bililiveHevc)
         }
     }
+	
+	var updateInfo070: Bool {
+		get {
+			return defaults(.updateInfo070) as? Bool ?? false
+		}
+		set {
+			defaultsSet(newValue, forKey: .updateInfo070)
+		}
+	}
+	
+	
+	var customMpvPath: String {
+		get {
+			return defaults(.customMpvPath) as? String ?? ""
+		}
+		set {
+			defaultsSet(newValue, forKey: .customMpvPath)
+		}
+	}
     
     private func colorEncode(_ color: NSColor) -> Data {
         (try? NSKeyedArchiver.archivedData(withRootObject: color, requiringSecureCoding: false)) ?? Data()
@@ -211,7 +225,7 @@ class Preferences: NSObject {
 private extension Preferences {
     
     func defaults(_ key: PreferenceKeys) -> Any? {
-        return prefs.value(forKey: key.rawValue) as Any?
+		prefs.value(forKey: key.rawValue) as Any?
     }
     
     func defaultsSet(_ value: Any, forKey key: PreferenceKeys) {
@@ -239,6 +253,11 @@ enum PreferenceKeys: String {
     case stateReplay
     case stateUnknown
     
+	case bilibiliHTMLDecoder
     case bilibiliCodec
     case bililiveHevc
+	
+	case updateInfo070
+	
+	case customMpvPath
 }

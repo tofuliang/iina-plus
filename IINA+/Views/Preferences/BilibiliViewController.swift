@@ -13,12 +13,16 @@ class BilibiliViewController: NSViewController {
     @IBOutlet weak var tabView: NSTabView!
     @IBOutlet weak var userNameTextField: NSTextField!
     @IBAction func logout(_ sender: Any) {
-        bilibili.logout().done { _ in
-            self.initStatus()
-            }.catch { error in
-                Log("Logout bilibili error: \(error)")
-                self.selectTabViewItem(.error)
-        }
+		Task {
+			do {
+				let bilibili = await Processes.shared.videoDecoder.bilibili
+				try await bilibili.logout()
+				initStatus()
+			} catch let error {
+				Log("Logout bilibili error: \(error)")
+				self.selectTabViewItem(.error)
+			}
+		}
     }
     
     @IBAction func tryAgain(_ sender: Any) {
@@ -34,8 +38,7 @@ class BilibiliViewController: NSViewController {
     enum BiliBiliTabs: Int {
         case info, login, error, progress
     }
-    let bilibili = Processes.shared.videoDecoder.bilibili
-    
+
     override func viewDidLoad() {
         super.viewDidLoad()
         initStatus()
@@ -43,28 +46,37 @@ class BilibiliViewController: NSViewController {
     
     override func prepare(for segue: NSStoryboardSegue, sender: Any?) {
         if let vc = segue.destinationController as? BilibiliLoginViewController {
-            vc.dismiss = {
-                self.dismiss(vc)
-                self.initStatus()
+            vc.dismissLogin = { isLogin in
+				vc.view.window?.close()
+				guard let isLogin = isLogin else { return }
+                self.updateStatus(isLogin)
             }
         }
     }
     
     func initStatus() {
         selectTabViewItem(.progress)
-        bilibili.isLogin().done(on: .main) {
-            if $0.0 {
-                self.selectTabViewItem(.info)
-            } else {
-                self.selectTabViewItem(.login)
-            }
-            self.userNameTextField.stringValue = $0.1
-            }.catch { error in
-                Log("Init bilibili status error: \(error)")
-                self.selectTabViewItem(.error)
-        }
+		Task {
+			do {
+				let bilibili = await Processes.shared.videoDecoder.bilibili
+				let s = try await bilibili.isLogin()
+				updateStatus(s)
+			} catch let error {
+				Log("Init bilibili status error: \(error)")
+				self.selectTabViewItem(.error)
+			}
+		}
     }
     
+	func updateStatus(_ isLogin: (Bool, String)) {
+		if isLogin.0 {
+			self.selectTabViewItem(.info)
+		} else {
+			self.selectTabViewItem(.login)
+		}
+		self.userNameTextField.stringValue = isLogin.1
+	}
+	
     func selectTabViewItem(_ tab: BiliBiliTabs) {
         DispatchQueue.main.async {
             if tab == .progress {

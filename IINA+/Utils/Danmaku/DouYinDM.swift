@@ -8,202 +8,127 @@
 
 import Cocoa
 import WebKit
-import Alamofire
-import PromiseKit
 
+@MainActor
 class DouYinDM: NSObject {
-    var url = ""
-    var delegate: DanmakuSubDelegate?
-    
-    let proc = Processes.shared
-    var ua: String {
-        proc.videoDecoder.douyin.douyinUA
-    }
-    
-    var storageDic: [String: String] {
-        proc.videoDecoder.douyin.storageDic
-    }
-    
-    var cookies = [String: String]()
-    
-    var roomId = ""
-    
-    private let tokenString = "bXNUb2tlbg==".base64Decode()
-    private var webview: WKWebView? = WKWebView()
-    private var requestTimer: Timer?
-    
-    var privateKeys: [String] {
-        proc.videoDecoder.douyin.privateKeys
-    }
-    
-    func start(_ url: String) {
-        self.url = url
-        
-        let path = Bundle.main.url(forResource: "douyin", withExtension: "html")!
-        
-        DispatchQueue.main.async {
-            self.webview?.navigationDelegate = self
-            self.webview?.loadFileURL(path, allowingReadAccessTo: path.deletingLastPathComponent())
-        }
-    }
-    
-    
-    func getRoomId() -> Promise<()> {
-        if roomId != "" {
-            return .init()
-        } else {
-            let dy = proc.videoDecoder.douyin
-            return dy.liveInfo(url).done {
-                self.cookies = dy.cookies
-                self.roomId = ($0 as! DouYinInfo).roomId
+	var url = ""
+	
+	
+	private var webView = WKWebView()
+	var requestPrepared: ((URLRequest) -> Void)?
+	
+	func initWS(_ roomId: String, cookies: [String: String], ua: String) async throws -> URLRequest {
+		let s = "bGl2ZV9pZD0xLGFpZD02MzgzLHZlcnNpb25fY29kZT0xODA4MDAsd2ViY2FzdF9zZGtfdmVyc2lvbj0xLjMuMCxyb29tX2lkPQ==".base64Decode()
+		+ roomId
+		+ "LHN1Yl9yb29tX2lkPSxzdWJfY2hhbm5lbF9pZD0sZGlkX3J1bGU9Myx1c2VyX3VuaXF1ZV9pZD0sZGV2aWNlX3BsYXRmb3JtPXdlYixkZXZpY2VfdHlwZT0sYWM9LGlkZW50aXR5PWF1ZGllbmNl".base64Decode()
+		
+		let code = "\("d2luZG93LmJ5dGVkX2FjcmF3bGVyLmZyb250aWVyU2lnbg==".base64Decode())({'\("WC1NUy1TVFVC".base64Decode())':'\(s.md5())'})"
+		
+		
+		let re = try await webView.evaluateJavaScriptAsync(code, type: [String: String].self)
+		
+		guard let value = re?.first?.value else {
+			throw DouYinDMError.signFailed
+		}
+		
+		var ws = "d3NzOi8vd2ViY2FzdDMtd3Mtd2ViLWhsLmRvdXlpbi5jb20vd2ViY2FzdC9pbS9wdXNoL3YyLz9hcHBfbmFtZT1kb3V5aW5fd2ViJnZlcnNpb25fY29kZT0xODA4MDAmd2ViY2FzdF9zZGtfdmVyc2lvbj0xLjMuMCZ1cGRhdGVfdmVyc2lvbl9jb2RlPTEuMy4wJmNvbXByZXNzPWd6aXAmaG9zdD1odHRwczovL2xpdmUuZG91eWluLmNvbSZhaWQ9NjM4MyZsaXZlX2lkPTEmZGlkX3J1bGU9MyZkZWJ1Zz10cnVlJmVuZHBvaW50PWxpdmVfcGMmc3VwcG9ydF93cmRzPTEmaW1fcGF0aD0vd2ViY2FzdC9pbS9mZXRjaC8mZGV2aWNlX3BsYXRmb3JtPXdlYiZjb29raWVfZW5hYmxlZD10cnVlJmJyb3dzZXJfbGFuZ3VhZ2U9ZW4tVVMmYnJvd3Nlcl9wbGF0Zm9ybT1NYWNJbnRlbCZicm93c2VyX29ubGluZT10cnVlJnR6X25hbWU9QXNpYS9TaGFuZ2hhaSZpZGVudGl0eT1hdWRpZW5jZSZoZWFydGJlYXREdXJhdGlvbj0xMDAwMCZyb29tX2lkPQ==".base64Decode()
+		
+		ws += roomId
+		ws += "JnNpZ25hdHVyZT0=".base64Decode()
+		ws += value
+		
+		print("dy ws, \(ws)")
+		
+		guard let u = URL(string: ws) else {
+			throw DouYinDMError.signFailed
+		}
+		var req = URLRequest(url: u)
+		let cookieString = cookies.map {
+			"\($0.key)=\($0.value)"
+		}.joined(separator: ";")
+		
+		req.setValue(cookieString, forHTTPHeaderField: "Cookie")
+		req.setValue("https://live.douyin.com", forHTTPHeaderField: "referer")
+		req.setValue(ua, forHTTPHeaderField: "User-Agent")
+		
+		return req
+	}
+	
+	func start(_ url: String) {
+		self.url = url
+		let path = Bundle.main.url(forResource: "douyin", withExtension: "html", subdirectory: "DouYin")!
+		DispatchQueue.main.async {
+			self.webView.navigationDelegate = self
+			self.webView.loadFileURL(path, allowingReadAccessTo: path.deletingLastPathComponent())
+		}
+	}
+	
+	func getRoomId() async throws -> String {
+		let douyin = await Processes.shared.videoDecoder.douyin
+		let info = try await douyin.liveInfo(self.url)
+		
+		if let rid = (info as? DouYinEnterData.DouYinLiveInfo)?.roomId {
+			return rid
+		} else {
+			return (info as! DouYinInfo).roomId
+		}
+	}
+	
+	enum DouYinDMError: Error {
+		case signFailed
+		case cookiesCount
+	}
+	
+	func prepareCookies() async {
+		let douyin = await Processes.shared.videoDecoder.douyin
+		
+		let storageDic = douyin.cookiesManager.storageDic
+		let privateKeys = douyin.cookiesManager.privateKeys
+		
+		let kvs = [
+			privateKeys[0].base64Decode(),
+			privateKeys[1].base64Decode()
+		].compactMap {
+			storageDic[$0] == nil ? nil : ($0, storageDic[$0]!)
+		}
+		
+		if kvs.count != 2 {
+			Log("DouYinDMError.cookiesCount")
+		}
+		
+		for kv in kvs {
+			let _ = try? await webView.evaluateJavaScriptAsync("window.sessionStorage.setItem('\(kv.0)', '\(kv.1)')", type: String.self)
+		}
+	}
+	
+	func startRequests() {
+		Task {
+            do {
+				let rid = try await getRoomId()
+				let douyin = await Processes.shared.videoDecoder.douyin
+				
+				let cookies = try await douyin.cookiesManager.cookies()
+				let ua = await douyin.cookiesManager.douyinUA()
+				
+				await prepareCookies()
+				let req = try await initWS(rid, cookies: cookies, ua: ua)
+				
+				requestPrepared?(req)
+            } catch {
+                Log("DouYinDM request error \(error)")
             }
+			
+			stop()
         }
-    }
-    
-    func prepareCookies() -> Promise<()> {
-        
-        let kvs = [
-            privateKeys[0].base64Decode(),
-            privateKeys[1].base64Decode()
-        ].compactMap {
-            storageDic[$0] == nil ? nil : ($0, storageDic[$0]!)
-        }
-        
-        guard kvs.count == 2, let webview = self.webview else {
-            return .init(error: DouYinDMError.deinited)
-        }
-        
-        let acts = kvs.map {
-            webview.evaluateJavaScript("window.sessionStorage.setItem('\($0.0)', '\($0.1)')").asVoid()
-        }
-
-        return when(fulfilled: acts)
-    }
-    
-    func prepareURL(internalExt: String = "",
-                   cursor: String = "0",
-                   lastRtt: String = "-1") -> Promise<String> {
-        guard let webview = webview else {
-            return .init(error: DouYinDMError.deinited)
-        }
-        
-        let u0 = "https:"
-        let u1 = "Ly9saXZlLmRvdXlpbi5jb20vd2ViY2FzdC9pbS9mZXRjaC8/".base64Decode()
-        
-        let u = u0 + u1
-        
-        var pars = "aid=6383&live_id=1&device_platform=web&language=en-US&room_id=\(roomId)&resp_content_type=protobuf&version_code=9999&identity=audience&internal_ext=\(internalExt)&cursor=\(cursor)&last_rtt=\(lastRtt)&did_rule=3"
-
-        pars += "&\(tokenString)=\(self.cookies[tokenString] ?? "")"
-        
-        let key = privateKeys[2].base64Decode()
-        
-        let pkey1 = privateKeys[3].base64Decode()
-        let pkey2 = privateKeys[4].base64Decode()
-        
-        return when(fulfilled: [
-            webview.evaluateJavaScript("this['\(key)'].test1('\(pars)', null)"),
-            webview.evaluateJavaScript("this['\(key)'].test2({url: '\(u1 + pars)'}, undefined, 'forreal')")
-        ]).compactMap {
-            $0 as? [String]
-        }.map {
-            u + pars + "&\(pkey1)=\($0[0])" + "&\(pkey2)=\($0[1])"
-        }
-    }
-    
-    func requestDM(_ url: String) -> Promise<(Response, Int)> {
-        Promise { resolver in
-            let date = Date()
-            let cookieString = cookies.map {
-                "\($0.key)=\($0.value)"
-            }.joined(separator: ";")
-            
-            let headers = HTTPHeaders([
-                "User-Agent": ua,
-                "referer": "https://live.douyin.com",
-                "Cookie": cookieString
-            ])
-            
-            AF.request(url, headers: headers).response {
-                if let newToken = $0.response?.headers.filter ({
-                    $0.name == "eC1tcy10b2tlbg==".base64Decode()
-                }).first?.value {
-                    self.cookies[self.tokenString] = newToken
-                }
-                
-                guard let data = $0.data else {
-                    resolver.reject(VideoGetError.notFountData)
-                    return
-                }
-                
-                let rtt = Int(abs(date.timeIntervalSinceNow * 1000))
-                do {
-                    let re = try Response(serializedData: data)
-                    resolver.resolve((re, rtt), $0.error)
-                } catch let error {
-                    resolver.reject(error)
-                }
-            }
-        }
-    }
-    
-    func decodeDM(_ result: (Response, Int)) {
-        let re = result.0
-        let lastRtt = "\(result.1)"
-        let internalExt = re.internalExt.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        let cursor = re.cursor
-        
-        let msgs = re.messages.filter {
-            $0.method == "WebcastChatMessage"
-        }.compactMap {
-            try? ChatMessage(serializedData: $0.payload)
-        }
-        
-//        Log(msgs.map({ $0.content }))
-        
-        msgs.forEach {
-            delegate?.send(.init(method: .sendDM, text: $0.content))
-        }
-        
-        requestTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { [weak self] timer in
-            guard let self = self else { return }
-            self.prepareURL(internalExt: internalExt, cursor: cursor, lastRtt: lastRtt).then {
-                self.requestDM($0)
-            }.done {
-                self.decodeDM($0)
-            }.catch {
-                Log($0)
-            }
-        }
-    }
-    
-    func stop() {
-        requestTimer?.invalidate()
-        requestTimer = nil
-        DispatchQueue.main.async {
-            self.webview?.stopLoading()
-            self.webview = nil
-        }
-    }
-    
-    enum DouYinDMError: Error {
-        case deinited
-    }
-    
-    func startRequests() {
-        getRoomId().then {
-            self.prepareCookies()
-        }.then {
-            self.prepareURL()
-        }.then {
-            self.requestDM($0)
-        }.done {
-            self.decodeDM($0)
-        }.catch {
-            Log($0)
-        }
-    }
+	}
+	
+	func stop() {
+		webView.navigationDelegate = nil
+		webView.stopLoading()
+		webView = .init()
+	}
 }
+
 
 extension DouYinDM: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

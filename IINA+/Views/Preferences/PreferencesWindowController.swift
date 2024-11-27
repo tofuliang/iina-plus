@@ -17,16 +17,24 @@ class PreferencesWindowController: NSWindowController {
         window?.titleVisibility = .hidden
         window?.delegate = self
         
+		reloadIINAState()
         
         if let preferencesTabViewController = contentViewController as? PreferencesTabViewController {
             preferencesTabViewController.autoResizeWindow(preferencesTabViewController.tabView.selectedTabViewItem, animate: false)
         }
     }
 
+	func reloadIINAState() {
+		Task {
+			await Processes.shared.iina.updateIINAState()
+		}
+	}
+	
 }
 
 extension PreferencesWindowController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
+		reloadIINAState()
         NSColorPanel.shared.close()
     }
 }

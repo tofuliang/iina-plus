@@ -7,13 +7,11 @@
 //
 
 import Cocoa
-import PromiseKit
 import Alamofire
-import PMKAlamofire
 import Marshal
 import SwiftSoup
 
-class Huya: NSObject, SupportSiteProtocol {
+actor Huya: SupportSiteProtocol {
     
     lazy var pSession: Session = {
         let configuration = URLSessionConfiguration.af.default
@@ -21,23 +19,18 @@ class Huya: NSObject, SupportSiteProtocol {
         configuration.headers.add(.userAgent(ua))
         return Session(configuration: configuration)
     }()
+	
+	// T.a.uid
+	private let huyaUid = (Int(Date().timeIntervalSince1970 * 1000) % Int(1e10) * Int(1e3) + Int.random(in: Int(1e2)..<Int(1e3))) % 4294967295
     
-    func liveInfo(_ url: String) -> Promise<LiveInfo> {
-        getHuyaInfoM(url).map {
-            $0.0
-        }
-    }
-    
-    func decodeUrl(_ url: String) -> Promise<YouGetJSON> {
-        getHuyaInfoM(url).map {
-            var yougetJson = YouGetJSON(rawUrl: url)
-            yougetJson.title = $0.0.title
-            $0.1.enumerated().forEach {
-                yougetJson.streams[$0.element.0] = $0.element.1
-            }
-            return yougetJson
-        }
-    }
+	func liveInfo(_ url: String) async throws -> any LiveInfo {
+		try await getHuyaInfoMP(url)
+	}
+	
+	func decodeUrl(_ url: String) async throws -> YouGetJSON {
+		let info = try await getHuyaInfoMP(url)
+		return info.videos(url, uid: huyaUid)
+	}
     
     // MARK: - Huya
     
@@ -48,116 +41,107 @@ class Huya: NSObject, SupportSiteProtocol {
     
     
     // href, name
-    func getHuyaRoomList(_ url: String) -> Promise<HuyaRoomList> {
-        AF.request(url).responseString().map {
-            var re = HuyaRoomList(current: "")
-            try SwiftSoup.parse($0.string).getElementsByClass("match-nav").first()?.children().enumerated().forEach {
-                
-                if try $0.element.attr("class") == "on" {
-                    re.current = try $0.element.attr("href")
-                }
-                
-                try re.list.append(.init(
-                    id: $0.element.attr("href"),
-                    index: $0.offset,
-                    title: $0.element.text(),
-                    url: "https://www.huya.com/\($0.element.attr("href"))",
-                    isLiving: $0.element.getChildNodes().contains(where: { try $0.attr("class") == "live" })
-                ))
-            }
-            return re
-        }
+    func getHuyaRoomList(_ url: String) async throws -> HuyaRoomList {
+		let text = try await AF.request(url).serializingString().value
+		var re = HuyaRoomList(current: "")
+		
+		try SwiftSoup.parse(text).getElementsByClass("match-nav").first()?.children().enumerated().forEach {
+			
+			if try $0.element.attr("class") == "on" {
+				re.current = try $0.element.attr("href")
+			}
+			
+			try re.list.append(.init(
+				id: $0.element.attr("href"),
+				index: $0.offset,
+				title: $0.element.text(),
+				url: "https://www.huya.com/\($0.element.attr("href"))",
+				isLiving: $0.element.getChildNodes().contains(where: { try $0.attr("class") == "live" })
+			))
+		}
+		return re
     }
+	
+	func getHuyaInfo(_ url: String) async throws -> HuyaStream.GameLiveInfo {
+		let obj = try await getPlayerConfig(url)
+		let stream = try HuyaStream(object: obj)
+		
+		guard let data = stream.data.first else {
+			throw VideoGetError.notFountData
+		}
+		var info = data.liveInfo
+		info.isLiving = data.streamInfoList.count > 0
+		
+		return info
+	}
     
-    func getHuyaInfo(_ url: String) -> Promise<(HuyaInfo, [(String, Stream)])> {
-//        https://github.com/zhangn1985/ykdl/blob/master/ykdl/extractors/huya/live.py
-        AF.request(url).responseString().map {
-            let text = $0.string
-            
-            let hyPlayerConfigStr: String? = {
-                var str = text.subString(from: "var hyPlayerConfig = ", to: "window.TT_LIVE_TIMING")
-                guard let index = str.lastIndex(of: ";") else { return nil }
-                str.removeSubrange(index ..< str.endIndex)
-                return str
-            }()
-            
-            guard let roomInfoData = text.subString(from: "var TT_ROOM_DATA = ", to: ";var").data(using: .utf8),
-                  let profileInfoData = text.subString(from: "var TT_PROFILE_INFO = ", to: ";var").data(using: .utf8),
-                  let playerInfoData = hyPlayerConfigStr?.data(using: .utf8) else {
-                throw VideoGetError.notFindUrls
-            }
-            
-            
-            var roomInfoJson: JSONObject = try JSONParser.JSONObjectWithData(roomInfoData)
-            let profileInfoJson: JSONObject = try JSONParser.JSONObjectWithData(profileInfoData)
-            let playerInfoJson: JSONObject = try JSONParser.JSONObjectWithData(playerInfoData)
-            
-            roomInfoJson.merge(profileInfoJson) { (current, _) in current }
-            let info: HuyaInfo = try HuyaInfo(object: roomInfoJson)
-            
-            if !info.isLiving {
-                return (info, [])
-            }
-            
-
-            
-            let streamStr: String = try playerInfoJson.value(for: "stream")
-            
-            guard let streamData = Data(base64Encoded: streamStr) else {
-                throw VideoGetError.notFindUrls
-            }
-            
-            let streamJSON: JSONObject = try JSONParser.JSONObjectWithData(streamData)
-            
-            let huyaStream: HuyaStream = try HuyaStream(object: streamJSON)
-        
-            var urls = [String]()
-            
-            if info.isSeeTogetherRoom {
-                urls = huyaStream.data.first?.urlsBak ?? []
-            } else {
-                urls = huyaStream.data.first?.urls ?? []
-            }
-            
-            guard urls.count > 0 else {
-                throw VideoGetError.notFindUrls
-            }
-            
-            let re = huyaStream.vMultiStreamInfo.enumerated().map { info -> (String, Stream) in
-                    
-                let u = urls.first!.replacingOccurrences(of: "ratio=0", with: "ratio=\(info.element.iBitRate)")
-                var s = Stream(url: u)
-                
-                if info.element.iBitRate == 0,
-                   info.offset == 0 {
-                    s.quality = huyaStream.vMultiStreamInfo.map {
-                        $0.iBitRate
-                    }.max() ?? 999999999
-                    s.quality += 1
-                } else {
-                    s.quality = info.element.iBitRate
-                }
-                return (info.element.sDisplayName, s)
-            }
-            return (info, re)
-        }
+    func getHuyaVideos(_ url: String) async throws -> YouGetJSON {
+		let obj = try await getPlayerConfig(url)
+		let info = try HuyaStream(object: obj)
+		let yougetJson = YouGetJSON(rawUrl: url)
+		return info.write(to: yougetJson, uid: huyaUid)
     }
+	
+	func getPlayerConfig(_ url: String) async throws -> JSONObject {
+		let text = try await AF.request(url).serializingString().value
+		
+		let hyPlayerConfigStr: String? = {
+			var str = text.subString(from: "var hyPlayerConfig = ", to: "window.TT_LIVE_TIMING")
+			
+			if let range = str.range(of: "stream:") {
+				str.removeSubrange(str.startIndex..<range.upperBound)
+				let c1 = str.indexes(of: "{")
+				let c2 = str.indexes(of: "}")
+				
+				if c2.count > c1.count {
+					str = String(str[str.startIndex...c2[c1.count-1]])
+				}
+			}
+			return str
+		}()
+		
+		guard let data = hyPlayerConfigStr?.data(using: .utf8) else {
+			throw VideoGetError.notFountData
+		}
+		
+		let jsonObj: JSONObject = try JSONParser.JSONObjectWithData(data)
+		return jsonObj
+	}
     
-    func getHuyaInfoM(_ url: String) -> Promise<(HuyaInfoM, [(String, Stream)])> {
-        pSession.request(url).responseString().map {
-            guard let jsonData = $0.string.subString(from: "<script> window.HNF_GLOBAL_INIT = ", to: " </script>").data(using: .utf8)
-            else {
-                throw VideoGetError.notFindUrls
-            }
-            let jsonObj: JSONObject = try JSONParser.JSONObjectWithData(jsonData)
-            
-            let info: HuyaInfoM = try HuyaInfoM(object: jsonObj)
-                  
-            return (info, info.urls)
-        }
+    func getHuyaInfoM(_ url: String) async throws -> HuyaInfoM {
+		let s = try await pSession.request(url).serializingString().value
+		guard let jsonData = s.subString(from: "<script> window.HNF_GLOBAL_INIT = ", to: " </script>").data(using: .utf8) else {
+			throw VideoGetError.notFindUrls
+		}
+		let jsonObj: JSONObject = try JSONParser.JSONObjectWithData(jsonData)
+		let info: HuyaInfoM = try HuyaInfoM(object: jsonObj)
+		return info
     }
+	
+	func getHuyaInfoMP(_ url: String) async throws -> HuyaInfoMP {
+		let ucs = url.pathComponents
+		guard ucs.count >= 3 else {
+			throw VideoGetError.invalidLink
+		}
+		let rid = ucs[2]
+		
+		if let rid = Int(rid) {
+			return try await getHuyaInfoMP(rid)
+		} else {
+			let rid = try await getHuyaInfo(url).rid
+			return try await getHuyaInfoMP(rid)
+		}
+	}
+	
+	func getHuyaInfoMP(_ rid: Int) async throws -> HuyaInfoMP {
+		let u = "https://mp.huya.com/cache.php?m=Live&do=profileRoom&roomid=\(rid)"
+		let data = try await pSession.request(u).serializingData().value
+		let jsonObj: JSONObject = try JSONParser.JSONObjectWithData(data)
+		return try HuyaInfoMP(object: jsonObj)
+	}
 }
 
+/*
 struct HuyaInfo: Unmarshaling, LiveInfo {
     var title: String = ""
     var name: String = ""
@@ -173,79 +157,162 @@ struct HuyaInfo: Unmarshaling, LiveInfo {
         title = try object.value(for: "introduction")
         name = try object.value(for: "nick")
         avatar = try object.value(for: "avatar")
-        avatar = avatar.replacingOccurrences(of: "http://", with: "https://")
+        avatar = avatar.https()
         isLiving = "\(try object.any(for: "isOn"))" == "1"
         cover = try object.value(for: "screenshot")
-        cover = cover.replacingOccurrences(of: "http://", with: "https://")
+        cover = cover.https()
         
-        let str: String = try object.value(for: "profileRoom")
-        rid = Int(str) ?? -1
+		rid = try object.value(for: "profileRoom")
+		
         let gameHostName: String = try object.value(for: "gameHostName")
         
         isSeeTogetherRoom = gameHostName == "seeTogether"
     }
 }
+ */
+
 
 struct HuyaStream: Unmarshaling {
-    var data: [HuyaUrl]
-    var vMultiStreamInfo: [StreamInfo]
-    
-    struct StreamInfo: Unmarshaling {
-        var sDisplayName: String
-        var iBitRate: Int
-        var iHEVCBitRate: Int
-        
-        init(object: MarshaledObject) throws {
-            sDisplayName = try object.value(for: "sDisplayName")
-            iBitRate = try object.value(for: "iBitRate")
-            iHEVCBitRate = try object.value(for: "iHEVCBitRate")
-        }
-    }
-    
-    struct HuyaUrl: Unmarshaling {
-        var urls: [String] = []
-        var urlsBak: [String] = []
-        
-        struct StreamInfo: Unmarshaling {
-            var sStreamName: String
-            var sFlvUrl: String
-            var newCFlvAntiCode: String
-            var sFlvAntiCode: String
-            
-            init(object: MarshaledObject) throws {
-                sStreamName = try object.value(for: "sStreamName")
-                sFlvUrl = try object.value(for: "sFlvUrl")
-                newCFlvAntiCode = try object.value(for: "newCFlvAntiCode")
-                sFlvAntiCode = try object.value(for: "sFlvAntiCode")
-            }
-        }
-        
-        init(object: MarshaledObject) throws {
-            let streamInfos: [StreamInfo] = try object.value(for: "gameStreamInfoList")
-            
-            
-            urls = streamInfos.compactMap { i -> String? in
-                let u = i.sFlvUrl + "/" + i.sStreamName + ".flv?" + i.newCFlvAntiCode + "&ratio=0"
-                return u
-                    .replacingOccurrences(of: "&amp;", with: "&")
-                    .replacingOccurrences(of: "http://", with: "https://")
-                    .replacingOccurrences(of: "https://tx.flv.huya.com/huyalive/", with: "https://tx.flv.huya.com/src/")
-            }
-            
-            
-            urlsBak = streamInfos.compactMap { i -> String? in
-                let u = i.sFlvUrl + "/" + i.sStreamName + ".flv?" + i.sFlvAntiCode
-                return huyaUrlFormatter(u.replacingOccurrences(of: "&amp;", with: "&"))?.replacingOccurrences(of: "http://", with: "https://")
-            }
-        }
-    }
-    
-    init(object: MarshaledObject) throws {
-        data = try object.value(for: "data")
-        vMultiStreamInfo = try object.value(for: "vMultiStreamInfo")
-    }
-    
+	var data: [HuyaInfoData]
+	var vMultiStreamInfo: [StreamInfo]
+	
+	private let bitrateMap = [
+		4100: 17200,
+		4200: 17100,
+		4300: 17300,
+		14100: 14200,
+		20100: 19200
+	]
+	
+	init(object: MarshaledObject) throws {
+		data = try object.value(for: "data")
+		vMultiStreamInfo = try object.value(for: "vMultiStreamInfo")
+	}
+	
+	func write(to yougetJson: YouGetJSON, uid: Int) -> YouGetJSON {
+		var yougetJson = yougetJson
+		
+		if let infoData = data.first {
+			yougetJson.title = infoData.liveInfo.title
+			
+			let urls = infoData.streamInfoList.map {
+				$0.url(uid)
+			}
+			
+			vMultiStreamInfo.enumerated().forEach {
+				var rate = $0.element.iBitRate
+				
+				let isFakeHdr = 16384 == (16384 & $0.element.iCompatibleFlag)
+				if isFakeHdr {
+					rate = bitrateMap[rate] ?? rate
+				}
+				
+				var us = urls.map {
+					if rate != 0 {
+						$0.replacingOccurrences(of: "&ratio=0", with: "&ratio=\(rate)")
+					} else {
+						$0.replacingOccurrences(of: "&ratio=0", with: "")
+					}
+				}
+				
+				var s = Stream(url: us.removeFirst())
+				s.src = us
+				s.quality = 9999 - $0.offset
+				yougetJson.streams[$0.element.sDisplayName] = s
+			}
+		}
+		
+		return yougetJson
+	}
+	
+	struct StreamInfo: Unmarshaling {
+		var sDisplayName: String
+		var iBitRate: Int
+		var iCodecType: Int
+		var iCompatibleFlag: Int
+		var iHEVCBitRate: Int
+		
+		init(object: MarshaledObject) throws {
+			sDisplayName = try object.value(for: "sDisplayName")
+			iBitRate = try object.value(for: "iBitRate")
+			iCodecType = try object.value(for: "iCodecType")
+			iCompatibleFlag = try object.value(for: "iCompatibleFlag")
+			iHEVCBitRate = try object.value(for: "iHEVCBitRate")
+		}
+	}
+	
+	struct HuyaInfoData: Unmarshaling {
+		var liveInfo: GameLiveInfo
+		var streamInfoList: [GameStreamInfo]
+		
+		init(object: MarshaledObject) throws {
+			liveInfo = try object.value(for: "gameLiveInfo")
+			streamInfoList = try object.value(for: "gameStreamInfoList")
+		}
+	}
+	
+	struct GameLiveInfo: Unmarshaling, LiveInfo {
+		
+		var title: String = ""
+		var name: String = ""
+		var isLiving = false
+		var avatar: String
+		var rid: Int
+		var cover: String = ""
+		var site: SupportSites = .huya
+		let uid: Int
+		
+		var isSeeTogetherRoom = false
+		let isSecret: Int
+		
+		
+		init(object: MarshaledObject) throws {
+			let name1: String = try object.value(for: "roomName")
+			let name2: String = try object.value(for: "introduction")
+			
+			title = name1 == "" ? name2 : name1
+			name = try object.value(for: "nick")
+			
+			avatar = try object.value(for: "avatar180")
+			avatar = avatar.https()
+			rid = try object.value(for: "profileRoom")
+			cover = try object.value(for: "screenshot")
+			cover = cover.https()
+			
+			if let uid: Int = try? object.value(for: "uid") {
+				self.uid = uid
+			} else if let uid: String = try? object.value(for: "uid"),
+					  let iuid = Int(uid) {
+				self.uid = iuid
+			} else {
+				throw MarshalError.keyNotFound(key: "huya.GameLiveInfo.uid")
+			}
+			
+			isSecret = try object.value(for: "isSecret")
+			let gameHostName: String = try object.value(for: "gameHostName")
+			isSeeTogetherRoom = gameHostName == "seeTogether"
+		}
+	}
+	
+	struct GameStreamInfo: Unmarshaling {
+		var sStreamName: String
+		var sFlvUrl: String
+		var sFlvUrlSuffix: String
+		var sFlvAntiCode: String
+		
+		init(object: MarshaledObject) throws {
+			sStreamName = try object.value(for: "sStreamName")
+			sFlvUrl = try object.value(for: "sFlvUrl")
+			sFlvUrlSuffix = try object.value(for: "sFlvUrlSuffix")
+			sFlvAntiCode = try object.value(for: "sFlvAntiCode")
+		}
+		
+		func url(_ uid: Int) -> String {
+			HuyaUrl.format(uid, sStreamName: sStreamName, sFlvUrl: sFlvUrl, sFlvUrlSuffix: sFlvUrlSuffix, sFlvAntiCode: sFlvAntiCode)
+		}
+	}
 }
+
 
 struct HuyaInfoM: Unmarshaling, LiveInfo {
 
@@ -259,9 +326,10 @@ struct HuyaInfoM: Unmarshaling, LiveInfo {
     
     var isSeeTogetherRoom = false
     
-    
-    var urls: [(String, Stream)]
-    
+	
+	let defaultCDN: String
+	let streamInfos: [StreamInfo]
+	let bitRateInfos: [BitRateInfo]
     
     struct StreamInfo: Unmarshaling {
         let sFlvUrl: String
@@ -271,23 +339,6 @@ struct HuyaInfoM: Unmarshaling, LiveInfo {
         
         let sCdnType: String
         
-        var url: String? {
-            get {
-                let u = sFlvUrl
-                + "/"
-                + sStreamName
-                + "."
-                + sFlvUrlSuffix
-                + "?"
-                + sFlvAntiCode
-                
-//                return formatURL(u)
-                
-                
-                return huyaUrlFormatter(u)
-            }
-        }
-        
         init(object: MarshaledObject) throws {
             sFlvUrl = try object.value(for: "sFlvUrl")
             sStreamName = try object.value(for: "sStreamName")
@@ -296,8 +347,6 @@ struct HuyaInfoM: Unmarshaling, LiveInfo {
             
             sCdnType = try object.value(for: "sCdnType")
         }
-        
-
     }
     
     struct BitRateInfo: Unmarshaling {
@@ -311,13 +360,11 @@ struct HuyaInfoM: Unmarshaling, LiveInfo {
     }
     
     
-    
-    
     init(object: MarshaledObject) throws {
         name = try object.value(for: "roomInfo.tProfileInfo.sNick")
         
-        let ava: String = try object.value(for: "roomInfo.tProfileInfo.sAvatar180")
-        avatar = ava.replacingOccurrences(of: "http://", with: "https://")
+		avatar = try object.value(for: "roomInfo.tProfileInfo.sAvatar180")
+        avatar = avatar.https()
         
         let state: Int = try object.value(for: "roomInfo.eLiveStatus")
         isLiving = state == 2
@@ -340,123 +387,137 @@ struct HuyaInfoM: Unmarshaling, LiveInfo {
         cover = try object.value(for: "roomInfo.tLiveInfo.sScreenshot")
         
         
-        let defaultCDN: String = try object.value(for: "roomInfo.tLiveInfo.tLiveStreamInfo.sDefaultLiveStreamLine")
+		defaultCDN = try object.value(for: "roomInfo.tLiveInfo.tLiveStreamInfo.sDefaultLiveStreamLine")
         
-        let streamInfos: [StreamInfo] = try object.value(for: "roomInfo.tLiveInfo.tLiveStreamInfo.vStreamInfo.value")
+		streamInfos = try object.value(for: "roomInfo.tLiveInfo.tLiveStreamInfo.vStreamInfo.value")
 
-        let bitRateInfos: [BitRateInfo] = try object.value(for: "roomInfo.tLiveInfo.tLiveStreamInfo.vBitRateInfo.value")
-        
-        let urls = streamInfos.sorted { i1, i2 -> Bool in
-            i1.sCdnType == defaultCDN
-        }.compactMap {
-            $0.url
-        }
-        
-        guard urls.count > 0 else {
-            self.urls = []
-            return
-        }
-        
-        self.urls = bitRateInfos.map {
-            ($0.sDisplayName, $0.iBitRate)
-        }.map { (name, rate) -> (String, Stream) in
-            var us = urls.map {
-                $0 + "&ratio=\(rate)"
-            }
-            var s = Stream(url: us.removeFirst())
-            s.src = us
-            s.quality = rate == 0 ? 9999999 : rate
-            return (name, s)
-        }
+		bitRateInfos = try object.value(for: "roomInfo.tLiveInfo.tLiveStreamInfo.vBitRateInfo.value")
     }
+	
+	func write(to yougetJson: YouGetJSON, uid: Int) -> YouGetJSON {
+		let yougetJson = yougetJson
+		
+		// HuyaUrl.format not work for m
+		return yougetJson
+		/*
+		let urls = streamInfos.sorted { i1, i2 -> Bool in
+			i1.sCdnType == defaultCDN
+		}.sorted { i1, i2 -> Bool in
+			!i1.sFlvUrl.contains("txdirect.flv.huya.com")
+		}.compactMap {
+			HuyaUrl.format(
+				uid,
+				sStreamName: $0.sStreamName,
+				sFlvUrl: $0.sFlvUrl,
+				sFlvUrlSuffix: $0.sFlvUrlSuffix,
+				sFlvAntiCode: $0.sFlvAntiCode)
+		}
+		
+		guard urls.count > 0 else {
+			return yougetJson
+		}
+		
+		bitRateInfos.map {
+			($0.sDisplayName, $0.iBitRate)
+		}.forEach { (name, rate) in
+			var us = urls.map {
+				$0.replacingOccurrences(of: "&ratio=0", with: "&ratio=\(rate)")
+			}
+			var s = Stream(url: us.removeFirst())
+			s.src = us
+			s.quality = rate == 0 ? 9999999 : rate
+			
+			yougetJson.streams[name] = s
+		}
+		
+		return yougetJson
+		 */
+	}
 }
 
-fileprivate func huyaUrlFormatter(_ u: String) -> String? {
-    let ib = u.split(separator: "?").map(String.init)
-    guard ib.count == 2 else { return nil }
-    let i = ib[0]
-    let b = ib[1]
-    guard let s = i.components(separatedBy: "/").last?.subString(to: ".") else { return nil }
-    let d = b.components(separatedBy: "&").reduce([String: String]()) { (re, str) -> [String: String] in
-        var r = re
-        let kv = str.components(separatedBy: "=")
-        guard kv.count == 2 else { return r }
-        r[kv[0]] = kv[1]
-        return r
-    }
-    
-    let n = "\(Int(Date().timeIntervalSince1970 * 10000000))"
-    
-    guard let fm = d["fm"]?.removingPercentEncoding,
-          let fmData = Data(base64Encoded: fm),
-          var u = String(data: fmData, encoding: .utf8),
-          let l = d["wsTime"] else { return nil }
-    
-    u = u.replacingOccurrences(of: "$0", with: "0")
-    u = u.replacingOccurrences(of: "$1", with: s)
-    u = u.replacingOccurrences(of: "$2", with: n)
-    u = u.replacingOccurrences(of: "$3", with: l)
-
-    let m = u.md5()
-
-    let y = b.split(separator: "&").map(String.init).filter {
-        $0.contains("txyp=") ||
-            $0.contains("fs=") ||
-            $0.contains("sphdcdn=") ||
-            $0.contains("sphdDC=") ||
-            $0.contains("sphd=")
-    }.joined(separator: "&")
-    
-    let url = "\(i)?wsSecret=\(m)&wsTime=\(l)&seqid=\(n)&\(y)&ratio=0&u=0&t=100&sv="
-        
-        .replacingOccurrences(of: "http://", with: "https://")
-    return url
+struct HuyaInfoMP: Unmarshaling, LiveInfo {
+	
+	var title: String
+	var name: String
+	var avatar: String
+	var cover: String
+	var isLiving: Bool
+	var site: SupportSites = .huya
+	
+	var streamInfos: [HuyaInfoM.StreamInfo]
+	var bitRateInfos: [HuyaInfoM.BitRateInfo]
+	
+	init(object: any Marshal.MarshaledObject) throws {
+		let name1: String = try object.value(for: "data.liveData.roomName")
+		let name2: String = try object.value(for: "data.liveData.introduction")
+		
+		title = name1 == "" ? name2 : name1
+		
+		name = try object.value(for: "data.liveData.nick")
+		avatar = try object.value(for: "data.liveData.avatar180")
+		avatar = avatar.https()
+		cover = try object.value(for: "data.liveData.screenshot")
+		cover = cover.https()
+		
+		let liveStatus: String = try object.value(for: "data.liveStatus")
+		isLiving = liveStatus == "ON"
+		
+		if isLiving {
+			streamInfos = try object.value(for: "data.stream.baseSteamInfoList")
+			
+			let bitRateInfoString: String = try object.value(for: "data.liveData.bitRateInfo")
+			guard let data = bitRateInfoString.data(using: .utf8) else {
+				throw VideoGetError.notFountData
+			}
+			let jsonObj: [JSONObject] = try JSONParser.JSONArrayWithData(data)
+			bitRateInfos = try jsonObj.map(HuyaInfoM.BitRateInfo.init)
+		} else {
+			streamInfos = []
+			bitRateInfos = []
+		}
+	}
+	
+	
+	func videos(_ url: String, uid: Int) -> YouGetJSON {
+		var yougetJson = YouGetJSON(rawUrl: url)
+		yougetJson.title = title
+		
+		let urls = streamInfos
+//			.sorted { i1, i2 -> Bool in
+//			i1.sCdnType == defaultCDN
+//		}
+			.sorted { i1, i2 -> Bool in
+			!i1.sFlvUrl.contains("txdirect.flv.huya.com")
+		}.compactMap {
+			HuyaUrl.format(
+				uid,
+				sStreamName: $0.sStreamName,
+				sFlvUrl: $0.sFlvUrl,
+				sFlvUrlSuffix: $0.sFlvUrlSuffix,
+				sFlvAntiCode: $0.sFlvAntiCode)
+		}
+		
+		guard urls.count > 0 else {
+			return yougetJson
+		}
+		
+		bitRateInfos.map {
+			($0.sDisplayName, $0.iBitRate)
+		}.forEach { (name, rate) in
+			var us = urls.map {
+				$0.replacingOccurrences(of: "&ratio=0", with: "&ratio=\(rate)")
+			}
+			var s = Stream(url: us.removeFirst())
+			s.src = us
+			s.quality = rate == 0 ? 9999999 : rate
+			
+			yougetJson.streams[name] = s
+		}
+		
+		return yougetJson
+	}
 }
 
-
-fileprivate func huyaUrlFormatter2(_ u: String) -> String? {
-    guard var uc = URLComponents(string: u) else {
-        return nil
-    }
-
-    uc.scheme = "https"
-    
-    if let fm = uc.queryItems?.first(where: {
-        $0.name == "fm"
-    })?.value {
-//        fm
-        
-        
-        
-        
-    }
-    
-    uc.queryItems?.removeAll {
-        $0.name == "fm"
-    }
-
-    //Number((Date.now() % 1e10 * 1e3 + (1e3 * Math.random() | 0)) % 4294967295)
-    
-    let date = Int(Date().timeIntervalSince1970 * 1000)
-    
-    let uuid = (date % Int(1e10) + Int.random(in: 1...999)) % 4294967295
-
-    let uid = 1462391016094
-    let seqid = date + uid
-
-    let newItems: [URLQueryItem] = [
-        .init(name: "seqid", value: "\(seqid)"),
-        .init(name: "ver", value: "1"),
-        .init(name: "uid", value: "\(uid)"),
-        .init(name: "uuid", value: "\(uuid)"),
-        .init(name: "sv", value: "2110131611"),
-    ]
-
-    uc.queryItems?.append(contentsOf: newItems)
-
-    
-    return uc.url?.absoluteString
-}
 
 struct HuyaVideoSelector: VideoSelector {
     var id: String

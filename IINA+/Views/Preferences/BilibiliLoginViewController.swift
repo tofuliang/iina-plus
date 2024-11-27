@@ -8,7 +8,6 @@
 
 import Cocoa
 import WebKit
-import PromiseKit
 
 class BilibiliLoginViewController: NSViewController {
 
@@ -16,12 +15,15 @@ class BilibiliLoginViewController: NSViewController {
     @IBOutlet weak var viewForWeb: NSView!
     @IBOutlet weak var waitProgressIndicator: NSProgressIndicator!
     var webView: WKWebView!
-    var dismiss: (() -> Void)?
-    let bilibili = Processes.shared.videoDecoder.bilibili
+	var dismissLogin: (((Bool, String)?) -> Void)?
+    
     @IBAction func tryAgain(_ sender: Any) {
         loadWebView()
     }
-    
+	@IBAction func cancel(_ sender: NSButton) {
+		dismissLogin?(nil)
+	}
+	
     var webviewObserver: NSKeyValueObservation?
     
     override func viewDidLoad() {
@@ -34,7 +36,7 @@ class BilibiliLoginViewController: NSViewController {
         super.keyUp(with: event)
         switch event.keyCode {
         case 53:
-            dismiss?()
+            dismissLogin?(nil)
         default:
             break
         }
@@ -51,11 +53,14 @@ class BilibiliLoginViewController: NSViewController {
     
     func loadWebView() {
         tabView.selectTabViewItem(at: 0)
+		
+		webviewObserver?.invalidate()
+		webviewObserver = nil
         
+		//	https://passport.bilibili.com/ajax/miniLogin/minilogin
         let url = URL(string: "https://passport.bilibili.com/login")
         let script = """
-document.getElementsByClassName("sns")[0].remove();
-document.getElementsByClassName("btn btn-reg")[0].remove()
+document.getElementsByClassName("v-navbar__back")[0].remove();
 """
         // WebView Config
         let contentController = WKUserContentController()
@@ -70,6 +75,8 @@ document.getElementsByClassName("btn btn-reg")[0].remove()
         webView.navigationDelegate = self
         viewForWeb.subviews.removeAll()
         viewForWeb.addSubview(webView)
+		webView.autoresizingMask = [.height, .width, .minXMargin, .minYMargin, .maxXMargin, .maxYMargin]
+
         webView.isHidden = false
         
         let request = URLRequest(url: url!)
@@ -83,6 +90,29 @@ document.getElementsByClassName("btn btn-reg")[0].remove()
         waitProgressIndicator.startAnimation(self)
     }
     
+	func checkLogin() async {
+		do {
+			let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
+			cookies.forEach {
+				HTTPCookieStorage.shared.setCookie($0)
+			}
+			
+			let bilibili = await Processes.shared.videoDecoder.bilibili
+			let isLogin = try await bilibili.isLogin()
+			
+			Log("islogin \(isLogin.0), \(isLogin.1)")
+			
+			if isLogin.0 {
+				self.dismissLogin?(isLogin)
+			} else {
+				self.tabView.selectTabViewItem(at: 1)
+			}
+		} catch let error {
+			Log(error)
+			self.tabView.selectTabViewItem(at: 1)
+		}
+	}
+	
 }
 
 
@@ -92,26 +122,14 @@ extension BilibiliLoginViewController: WKNavigationDelegate {
         guard let str = webView.url?.absoluteString,
               str.contains("bili_jct") else { return }
         displayWait()
-        webviewObserver = webView.observe(\.isLoading) { (webView, _) in
-            if !webView.isLoading {
-                Log("Finish loading")
-                firstly {
-                    after(seconds: 3)
-                }.then {
-                    self.bilibili.isLogin()
-                }.done(on: .main) {
-                    Log("islogin \($0.0), \($0.1)")
-                    
-                    if $0.0 {
-                        self.dismiss?()
-                    } else {
-                        self.tabView.selectTabViewItem(at: 1)
-                    }
-                }.catch(on: .main) { _ in
-                    self.tabView.selectTabViewItem(at: 1)
-                }
-            }
-        }
+		
+		webviewObserver = webView.observe(\.isLoading) { (webView, _) in
+			Task { @MainActor in
+				guard !webView.isLoading else { return }
+				Log("Finish loading")
+				await self.checkLogin()
+			}
+		}
     }
     
     

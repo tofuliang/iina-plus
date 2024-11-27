@@ -7,13 +7,13 @@
 //
 
 import Cocoa
-import PromiseKit
 import WebKit
 
 class JSPlayerViewController: NSViewController {
     
 // MARK: - WebView
-    @IBOutlet var webView: WKWebView!
+	@IBOutlet var viewForWeb: NSView!
+    var webView: JSPlayerWebView!
 
 // MARK: - Player Controllers
     enum PlayerController: Int {
@@ -28,7 +28,7 @@ class JSPlayerViewController: NSViewController {
     @IBOutlet var reloadButton: NSButton!
     @IBAction func reloadVideo(_ sender: NSButton) {
         startLoading()
-        evaluateJavaScript("flv_destroy();")
+        evaluateJavaScript("playerDestroy();")
         danmaku?.stop()
         openLive()
     }
@@ -36,14 +36,14 @@ class JSPlayerViewController: NSViewController {
     @IBOutlet var volumeBox: NSBox!
     @IBOutlet var volumeButton: NSButton!
     @IBAction func mute(_ sender: NSButton) {
-        evaluateJavaScript("flvPlayer.muted = !flvPlayer.muted;")
+        evaluateJavaScript("player.muted = !player.muted;")
         playerMuted = !playerMuted
         initVolumeButton()
     }
     
     @IBOutlet var volumeSlider: NSSlider!
     @IBAction func volumeChanged(_ sender: NSSlider) {
-        evaluateJavaScript("flvPlayer.volume = \(sender.doubleValue);")
+        evaluateJavaScript("player.volume = \(sender.doubleValue);")
         initVolumeButton()
     }
      
@@ -109,6 +109,7 @@ class JSPlayerViewController: NSViewController {
     
 // MARK: - Video Values
     var url = ""
+	var hackUrl = ""
     var result: YouGetJSON?
     var videoKey: String? {
         didSet {
@@ -116,9 +117,87 @@ class JSPlayerViewController: NSViewController {
         }
     }
     var videoLine = 0
+	
+	@IBOutlet var playerStateTextField: NSTextField!
+	
+	enum PlayerState {
+		case loadingWebView
+		case opening
+		case playing
+		case stuckChecking
+		case reopening
+		case error(PlayerError)
+	}
+	
+	enum PlayerError {
+		case openFailed
+		case notLiving
+		case unknown
+		
+		func string() -> String {
+			switch self {
+			case .notLiving:
+				return NSLocalizedString("VideoGetError.isNotLiving" , comment: "isNotLiving")
+			case .openFailed:
+				return "Open Failed"
+			case .unknown:
+				return "Unknown"
+			}
+		}
+	}
+	
+	var playerState: PlayerState = .loadingWebView {
+		didSet {
+			guard let stateTF = playerStateTextField else { return }
+			
+			switch playerState {
+			case .loadingWebView, .stuckChecking, .opening:
+				stateTF.stringValue = NSLocalizedString("Loading..." , comment: "Loading...")
+				stateTF.isHidden = false
+			case .error(let err):
+				stateTF.stringValue = err.string()
+				stateTF.isHidden = false
+			default:
+				stateTF.isHidden = true
+			}
+		}
+	}
     
 // MARK: - Other Value
-    
+
+	var napActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "JSPlayer is playing")
+	
+	var playerReloadDate: Date?
+	var playerReloadTimer: Timer?
+	
+	var decodedFrames = 0 {
+		willSet {
+			guard stuckChecker != -1 else { return }
+			
+			if newValue == decodedFrames {
+				stuckChecker += 1
+			} else {
+				stuckChecker = 0
+			}
+		}
+	}
+	
+	var stuckChecker = 0 {
+		didSet {
+			if stuckChecker >= 12 {
+				stuckChecker = -1
+				Log("stuckChecker: reload")
+				openLive()
+			} else if stuckChecker > 5 {
+				playerState = .stuckChecking
+				startLoading(stop: false)
+			} else if stuckChecker == 0 {
+				playerState = .playing
+				startLoading(stop: true)
+			}
+		}
+	}
+	
     var webViewFinishLoaded = false
     
     var windowSizeInited = false
@@ -144,7 +223,11 @@ class JSPlayerViewController: NSViewController {
              
              error,
              loadingComplete,
-             recoveredEarlyEof
+             recoveredEarlyEof,
+			 
+			 metaData,
+			 mediaInfo,
+			 stuckChecker
     }
     
     override func viewDidLoad() {
@@ -164,7 +247,8 @@ class JSPlayerViewController: NSViewController {
         startLoading()
         initWebView()
         
-        danmakuWS = .init(id: "", site: .local, url: "", webview: webView)
+        danmakuWS = .init(id: "", site: .local, url: "", contextName: "", webview: webView)
+        danmakuWS.version = 1
     }
     
     func initTrackingAreas() {
@@ -219,6 +303,8 @@ class JSPlayerViewController: NSViewController {
     
     
     func startLoading(stop: Bool = false) {
+		guard reloadButton.isHidden == stop else { return }
+		
         reloadButton.isHidden = !stop
         loadingProgressIndicator.isHidden = stop
         
@@ -230,68 +316,127 @@ class JSPlayerViewController: NSViewController {
         
         updateControllersState()
     }
+	
+	func tryToReconnect() {
+		guard let date = playerReloadDate else {
+			openLive()
+			return
+		}
+		let limit = Double(5)
+		let sinceLimit = date.timeIntervalSinceNow + limit
+		if sinceLimit > 0 {
+			guard playerReloadTimer == nil else { return }
+			playerReloadTimer = Timer.scheduledTimer(withTimeInterval: sinceLimit, repeats: false) { [weak self] timer in
+                Task {
+                    try? await self?.openLive()
+                }
+			}
+		} else {
+			openLive()
+		}
+	}
     
     func openLive() {
-        proc.stopDecodeURL()
-        proc.videoDecoder.liveInfo(url, false).get {
-            if !$0.isLiving {
-                throw VideoGetError.isNotLiving
-            }
-        }.then { _ in
-            self.proc.decodeURL(self.url)
-        }.then { re in
-            self.proc.videoDecoder.prepareVideoUrl(re, {
-                let videoKeys = re.videos.map {
-                    $0.key
-                }
-                
-                if self.videoKey == nil || !videoKeys.contains(self.videoKey!) {
-                    self.videoKey = re.videos.first?.key
-                }
-                
-                return self.videoKey ?? "😶‍🌫️"
-            }())
-        }.done(on: .main) {
-            let re = $0
-            self.result = re
-            
-            guard let stream = re.videos.first(where: {
-                $0.key == self.videoKey
-            })?.value else {
-                return
-            }
-            var urls = stream.src
-            if let u = stream.url {
-                urls.insert(u, at: 0)
-            }
-            
-            guard urls.count > 0 else { return }
-            
-            if urls.count <= self.videoLine {
-                self.videoLine = 0
-            }
-            
-            self.initControllers()
-            
-            let url = urls[0]
-            
-            self.evaluateJavaScript("initContent();")
-            self.evaluateJavaScript("window.openUrl('\(url)');")
-            self.evaluateJavaScript("flvPlayer.muted = \(self.playerMuted);")
-            
-            switch re.site {
-            case .douyu, .biliLive, .huya, .douyin:
-                self.startDM()
-            case .bilibili, .bangumi:
-                break
-            default:
-                break
-            }
-        }.catch(on: .main, policy: .allErrors) {
-            print($0)
-        }
+		Task {
+			do {
+				try await openLive()
+			} catch let error {
+				Log("openLive failed \(error)")
+			}
+		}
     }
     
+	func openLive() async throws {
+		await MainActor.run {
+			playerState = .opening
+			playerReloadDate = .init()
+			playerReloadTimer?.invalidate()
+			playerReloadTimer = nil
+		}
+		
+		let info = try await proc.videoDecoder.liveInfo(url, true)
+		
+		if !info.isLiving {
+			await MainActor.run {
+				playerState = .error(.notLiving)
+			}
+			throw VideoGetError.isNotLiving
+		}
+		
+		var json = try await proc.decodeURL(self.url)
+		
+		json = try await proc.videoDecoder.prepareVideoUrl(json, {
+			let videoKeys = json.videos.map {
+				$0.key
+			}
+			
+			if self.videoKey == nil || !videoKeys.contains(self.videoKey!) {
+				self.videoKey = json.videos.first?.key
+			}
+			
+			return self.videoKey ?? "😶‍🌫️"
+		}())
+		
+		await MainActor.run {
+			self.result = json
+		}
+		
+		guard let stream = json.videos.first(where: {
+			$0.key == self.videoKey
+		})?.value else {
+			await MainActor.run {
+				self.playerState = .error(.openFailed)
+			}
+			return
+		}
+		var urls = stream.src
+		if let u = stream.url {
+			urls.insert(u, at: 0)
+		}
+		
+		urls = urls.filter {
+			!$0.isEmpty
+		}
+		
+		guard urls.count > 0 else {
+			await MainActor.run {
+				self.playerState = .error(.openFailed)
+			}
+			return
+		}
+		
+		if urls.count <= self.videoLine {
+			self.videoLine = 0
+		}
+		
+		self.initControllers()
+		let u = urls[0]
+		
+		guard u.count > 0 else {
+			await MainActor.run {
+				self.playerState = .error(.openFailed)
+			}
+			return
+		}
+		
+		await MainActor.run {
+			self.hackUrl = JSPlayerURL.encode(u, site: json.site)
+			
+			self.evaluateJavaScript("initContent();")
+			self.evaluateJavaScript("window.openUrl('\(self.hackUrl)');")
+			self.evaluateJavaScript("player.muted = \(self.playerMuted);")
+			
+			switch json.site {
+			case .douyu, .biliLive, .huya, .douyin:
+				self.startDM()
+			case .bilibili, .bangumi:
+				break
+			default:
+				break
+			}
+		}
+	}
+	
     
     func initControllers() {
         linesPopUpButton.removeAllItems()
@@ -346,28 +491,50 @@ class JSPlayerViewController: NSViewController {
             withExtension: "htm",
             subdirectory: "WebFiles") else { return }
         
+		let config = WKWebViewConfiguration()
+		
+		ScriptMessageKeys.allCases.forEach {
+			config.userContentController.add(self, name: $0.rawValue)
+		}
+		
+		let handler = JSPlayerURLSchemeHandler()
+		
+		config.setURLSchemeHandler(handler, forURLScheme: JSPlayerSchemeName)
+		
+		config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+		
+		viewForWeb.subviews.removeAll()
+		webView = .init(frame: viewForWeb.frame, configuration: config)
+		viewForWeb.addSubview(webView)
+		webView.autoresizingMask = [.height, .width]
+		
+		webView.navigationDelegate = self
+		
+#if DEBUG
+		if #available(macOS 13.3, *) {
+			webView.isInspectable = true
+		}
+#endif
+		
         // Background Color
         view.wantsLayer = true
         view.layer?.backgroundColor = .black
         webView.setValue(false, forKey: "drawsBackground")
 
-        webView.navigationDelegate = self
-        ScriptMessageKeys.allCases.forEach {
-            webView.configuration.userContentController.add(self, name: $0.rawValue)
-        }
-        
-        webView.configuration.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
-        
         webView.loadFileURL(playerUrl, allowingReadAccessTo: playerUrl.deletingLastPathComponent())
     }
     
     func deinitWebView() {
-        evaluateJavaScript("flv_destroy();")
-        
+        evaluateJavaScript("playerDestroy();")
         webView.stopLoading()
+
         ScriptMessageKeys.allCases.forEach {
             webView.configuration.userContentController.removeScriptMessageHandler(forName: $0.rawValue)
         }
+		
+        if let handler = webView.configuration.urlSchemeHandler(forURLScheme: JSPlayerSchemeName) as? JSPlayerURLSchemeHandler {
+			handler.stop()
+		}
         
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -377,9 +544,11 @@ class JSPlayerViewController: NSViewController {
     
     func evaluateJavaScript(_ str: String) {
         guard webView != nil else { return }
-        webView.evaluateJavaScript(str).catch {
-            Log("evaluateJavaScript error \($0)")
+        webView.evaluateJavaScript(str) {
+			guard let e = $1 else { return }
+			Log("evaluateJavaScript error \(e)")
         }
+		
     }
     
     
@@ -543,7 +712,6 @@ extension JSPlayerViewController: WKNavigationDelegate {
         Log("Finish")
         webViewFinishLoaded = true
         guard url != "", result == nil else { return }
-        
         openLive()
     }
 }
@@ -559,9 +727,14 @@ extension JSPlayerViewController: NSWindowDelegate {
         videoKey = nil
         videoLine = 0
         
+		hideOSCTimer?.stop()
+		hideOSCTimer = nil
+		
         danmaku?.stop()
         danmaku = nil
         deinitWebView()
+		
+		ProcessInfo.processInfo.endActivity(napActivity)
     }
     
     func windowWillEnterFullScreen(_ notification: Notification) {
@@ -583,15 +756,15 @@ extension JSPlayerViewController: WKScriptMessageHandler {
         switch key {
         case .print:
             print("Player, ", message.body)
-            if let msg = message.body as? String,
-               msg.contains("Playback seems stuck") {
+			guard let msg = message.body as? String else { return }
+            if msg.contains("Playback seems stuck") {
                 
                 print("==========================================")
                 print("==========================================")
                 print("===========Playback seems stuck===========")
                 print("==========================================")
                 print("==========================================")
-            }
+			}
         case .duration:
             let d = message.body as? Int ?? 0
             durationButton.title = durationFormatter.string(from: .init(d)) ?? "00:00"
@@ -612,12 +785,22 @@ extension JSPlayerViewController: WKScriptMessageHandler {
             var newFrame = NSRect(origin: .zero, size: size)
             
             if !windowSizeInited,
-                var frame = NSScreen.main?.frame {
-                let newH = frame.width / size.width * size.height
-                frame.origin.y = frame.height - newH
-                frame.size.height = newH
-                
-                newFrame = frame
+			   let frame = NSScreen.main?.visibleFrame ?? NSScreen.main?.frame {
+				
+				let aspectRatio = size.width / size.height
+				
+				if aspectRatio >= frame.width / frame.height {
+					let w = frame.width
+					let h = w / aspectRatio
+					newFrame.size = .init(width: w, height: h)
+				} else {
+					let h = frame.height
+					let w = h * aspectRatio
+					newFrame.size = .init(width: w, height: h)
+				}
+				
+				newFrame.origin.x = (frame.width - newFrame.width) / 2
+				newFrame.origin.y = frame.height - newFrame.height
             } else {
                 var f = window.frame
                 f.size.height = f.width / size.width * size.height
@@ -631,17 +814,27 @@ extension JSPlayerViewController: WKScriptMessageHandler {
                 self.windowSizeInited = true
             }
             self.startLoading(stop: true)
-            
+			stuckChecker = 0
         case .end:
-            print("==========================================")
-            print("==================Ended===================")
-            print("==========================================")
+			Log("player.end")
+			tryToReconnect()
         case .loadingComplete:
-            break
+			Log("player.loadingComplete")
+			tryToReconnect()
         case .recoveredEarlyEof:
-            break
+			Log("player.recoveredEarlyEof")
         case .error:
-            break
+			Log("player.error \(message.body)")
+			tryToReconnect()
+		case .metaData:
+//			Log(message.body)
+			break
+		case .mediaInfo:
+//			Log(message.body)
+			break
+		case .stuckChecker:
+			guard let df = message.body as? Int else { return }
+			decodedFrames = df
         }
     }
 }

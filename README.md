@@ -4,41 +4,28 @@
 
 ![](https://i.loli.net/2018/10/30/5bd83a7952437.gif)
 
-## Install a player
 
-- [IINA](https://lhc70000.github.io/iina/)
-- [IINA-Danmaku](https://github.com/xjbeta/iina-danmaku/releases)
-- [mpv](https://mpv.io/)
+## Download & Guide
 
-## Check your preferences
+- ### [IINA-plus Releases](https://github.com/xjbeta/iina-plus/releases)
+- ### [Danmaku Guide](https://github.com/xjbeta/iina-plus/wiki/1.-%E6%97%A0%E8%84%91%E6%95%99%E7%A8%8B)
 
-![](https://i.loli.net/2018/10/30/5bd83ae6985bd.jpeg)
 
 ## Support Status
 
 <!--https://www.tablesgenerator.com/markdown_tables#-->
 
-| website  | live status | video decode | danmaku |
-| -------- | ----------- | ------------ | ------- |
-| bilibili | ∙           | ✓            | ✓       |
-| bangumi  | ∙           | ✓            | ✓       |
-| bililive | ✓           | ✓            | ✓       |
-| douyu    | ✓           | ✓            | ✓       |
-| huya     | ✓           | ✓            | ✓       |
-| cc.163   | ✓           | ✓            | ✕       |
-| douyin   | ✓           | ✓            | ✓       |
+| website       | live status | video decode | danmaku |
+|---------------|-------------|--------------|---------|
+| bilibili      | -           | ✓            | ✓       |
+| bangumi       | -           | ✓            | ✓       |
+| bililive      | ✓           | ✓            | ✓       |
+| douyu         | ✓           | ✓            | ✓       |
+| huya          | ✓           | ✓            | ✓       |
+| douyin        | ✓           | ✓            | ✓       |
+| cc.163        | ✓           | ✓            | ✕       |
+| live.qq       | ✓           | ✓            | ✕       |
 
-## Danmaku
-
-##### You should install the [IINA with Danmaku support](https://github.com/xjbeta/iina-danmaku/releases).
-
-##### Check [wiki](https://github.com/xjbeta/iina-plus/wiki) for more info.
-
-## Download
-
-##### IINA-plus [DMG or ZIP](https://github.com/xjbeta/iina-plus/releases)
-
-#### IINA-Danmaku [DMG or ZIP](https://github.com/xjbeta/iina-danmaku/releases)
 
 ## Build
 
@@ -46,8 +33,8 @@
 
 ```
 git clone https://github.com/xjbeta/iina-plus
-cd iina+/iina+/WebFiles/
-npm install
+cd iina-plus
+bash InstallDeps.sh
 ```
 
 Open `IINA+.xcodeproj` with Xcode.
@@ -57,27 +44,29 @@ Open `IINA+.xcodeproj` with Xcode.
 ### Librarys
 
 - [Alamofire](https://github.com/Alamofire/Alamofire)
-- [swifter](https://github.com/httpswift/swifter)
-- [SwiftSoup](https://github.com/scinfu/SwiftSoup)
 - [CryptoSwift](https://github.com/krzyzanowskim/CryptoSwift)
-- [Marshal](https://github.com/utahiosmac/Marshal)
-- [PromiseKit](https://github.com/mxcl/PromiseKit)
 - [GzipSwift](https://github.com/1024jp/GzipSwift)
-- [swift-protobuf](https://github.com/apple/swift-protobuf)
+- [Marshal](https://github.com/utahiosmac/Marshal)
 - [SDWebImage](https://github.com/SDWebImage/SDWebImage)
-- [Sparkle](https://github.com/sparkle-project/Sparkle)
 - [SocketRocket with SPM patch](https://github.com/xjbeta/SocketRocket)
+- [Sparkle](https://github.com/sparkle-project/Sparkle)
+- [SwiftBrotli](https://github.com/f-meloni/SwiftBrotli)
+- [swifter](https://github.com/httpswift/swifter)
+- [swift-protobuf](https://github.com/apple/swift-protobuf)
+- [SwiftSoup](https://github.com/scinfu/SwiftSoup)
+
 
 
 ### Web Librarys
 
 - [CommentCoreLibrary](https://github.com/jabbany/CommentCoreLibrary)
-- [flv.js](https://github.com/bilibili/flv.js)
+- [mpegts.js](https://github.com/xqq/mpegts.js)
 
-### Bilibili block list
-
-- [Bilibili-Block-List](https://github.com/jnxyp/Bilibili-Block-List)
 
 ### Sidebar Icons
 
 - [@freepik](https://www.flaticon.com/authors/freepik)
+
+
+## Donate
+<img src="IINA+/Assets/Assets.xcassets/WX_Payment.imageset/WX_Payment.jpg" width="320"/>

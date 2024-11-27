@@ -5,7 +5,7 @@ var isLiving = true;
 var defWidth = 680;
 var uuid = '';
 
-var flvPlayer;
+var player;
 var videoDuration;
 
 
@@ -13,59 +13,56 @@ function print(text) {
     window.webkit.messageHandlers.print.postMessage(text);
 };
 
-var flvjsLog = function(type, str) {
+var playerLogListener = function(type, str) {
     print(str);
 };
 
-function flv_destroy() {
-    flvPlayer.pause();
-    flvPlayer.unload();
-    flvPlayer.detachMediaElement();
-    flvPlayer.destroy();
-    flvPlayer = null;
-    flvjs.LoggingControl.removeLogListener(flvjsLog);
+function playerDestroy() {
+    player.pause();
+    player.unload();
+    player.detachMediaElement();
+    player.destroy();
+    player = null;
+    mpegts.LoggingControl.removeLogListener(playerLogListener);
 
     document.getElementById('videoElement').replaceWith(document.getElementById('videoElement').cloneNode());
 };
 
 window.openUrl = function(url) {
-    if (flvPlayer != null) {
-        flv_destroy();
+    if (player != null) {
+        playerDestroy();
     };
 
-    if (flvjs.isSupported()) {
+	if (mpegts.isSupported()) {
         var videoElement = document.getElementById('videoElement');
 
         var mediaDataSource = {
             type: 'flv',
+			enableWorker: true,
             hasAudio: true,
             hasVideo: true,
             isLive: true,
             withCredentials: false,
+			lazyLoad: false,
+			rangeLoadZeroStart: true,
             url: url
         };
 
-        flvPlayer = flvjs.createPlayer(mediaDataSource, {
-            enableWorker: false,
+        player = mpegts.createPlayer(mediaDataSource, {
             lazyLoadMaxDuration: 3 * 60,
             seekType: 'range',
+            liveBufferLatencyChasing: true,
+            liveBufferLatencyMaxLatency: 8,
+            liveBufferLatencyMinRemain: 0.5,
         });
 
-        flvjs.LoggingControl.addLogListener(flvjsLog);
+        mpegts.LoggingControl.addLogListener(playerLogListener);
 
         videoElement.addEventListener("loadeddata", function(e) {
             print("loadeddata");
             window.webkit.messageHandlers.size.postMessage([videoElement.videoWidth, videoElement.videoHeight]);
         });
-        videoElement.addEventListener("loadedmetadata", function(e) {
-            print("loadedmetadata");
-        });
-        videoElement.addEventListener("ended", function(e) {
-            window.webkit.messageHandlers.end.postMessage();
-        });
-        videoElement.addEventListener("error", function(e) {
-            print("error");
-        });
+        
         videoElement.addEventListener("resize", function(e) {
             window.webkit.messageHandlers.size.postMessage([videoElement.videoWidth, videoElement.videoHeight]);
         });
@@ -78,10 +75,47 @@ window.openUrl = function(url) {
             };
         });
 
-        flvPlayer.attachMediaElement(videoElement);
+        player.attachMediaElement(videoElement);
 
-        flvPlayer.load();
-        flvPlayer.play();
+        player.load();
+        player.play();
+
+
+        player.on(mpegts.Events.Error, function(data) {
+            window.webkit.messageHandlers.error.postMessage(data);
+        });
+
+        player.on(mpegts.Events.LOADING_COMPLETE, function(data) {
+            window.webkit.messageHandlers.loadingComplete.postMessage(data);
+        });
+
+        player.on(mpegts.Events.RECOVERED_EARLY_EOF, function(data) {
+            window.webkit.messageHandlers.recoveredEarlyEof.postMessage(data);
+        });
+
+        player.on(mpegts.Events.MEDIA_INFO, function(data) {
+            window.webkit.messageHandlers.mediaInfo.postMessage(data);
+        });
+
+        // player.on(mpegts.Events.METADATA_ARRIVED, function(data) {
+        //     print(data);
+        //     print('METADATA_ARRIVED');
+        // });
+
+        
+        player.on(mpegts.Events.SCRIPTDATA_ARRIVED, function(data) {
+            window.webkit.messageHandlers.metaData.postMessage(data.onMetaData);
+        });
+
+        // stuckChecker
+        player.on(mpegts.Events.STATISTICS_INFO, function(data) {
+            window.webkit.messageHandlers.stuckChecker.postMessage(data.decodedFrames);
+        });
+
+        player.on(mpegts.Events.DESTROYING, function(data) {
+            print(data);
+            print('DESTROYING');
+        });
 
     }
 };
@@ -119,19 +153,25 @@ window.dmMessage = function(event) {
         isLiving = false;
         break;
     case 'sendDM':
-        if (document.visibilityState == 'visible') {
-            var comment = {
-                'text': event.text,
-                'stime': 0,
-                'mode': 1,
-                'color': 0xffffff,
-                'border': false,
-                'imageSrc': event.imageSrc,
-                'imageWidth': event.imageWidth
-            };
-            window.cm.send(comment);
+        if (document.visibilityState != 'visible') {
+            return;
         }
-        break
+            
+        event.dms.forEach(function(element, index) {
+            setTimeout(function () {
+                var comment = {
+                    'text': element.text,
+                    'stime': 0,
+                    'mode': 1,
+                    'color': 0xffffff,
+                    'border': false,
+                    'imageSrc': element.imageSrc,
+                    'imageWidth': element.imageWidth
+                };
+                window.cm.send(comment);
+            }, index * 150);
+        });
+        break;
     case 'liveDMServer':
         updateStatus(event.text);
         break
@@ -311,5 +351,5 @@ function initContent(){
     // Block unknown types.
     // https://github.com/jabbany/CommentCoreLibrary/issues/97
     cm.filter.allowUnknownTypes = false;
-    console.log('initContent', id);
+    console.log('initContent');
 }

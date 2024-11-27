@@ -8,10 +8,13 @@
 
 import Cocoa
 import SDWebImage
+import Sparkle
 
-@NSApplicationMain
+@main
 class AppDelegate: NSObject, NSApplicationDelegate {
 
+	let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+	
     lazy var logUrl: URL? = {
         do {
             var logPath = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -30,8 +33,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
     }()
-    
+	
     func applicationDidFinishLaunching(_ aNotification: Notification) {
+		
+		#if DEBUG
+		updaterController.updater.automaticallyChecksForUpdates = false
+		#endif
+		
         deleteUselessFiles()
         Log("App did finish launch")
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
@@ -46,10 +54,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         initImageCache()
         
         Processes.shared.httpServer.start()
+		
+		showUpdateAlert()
     }
+
 
     func applicationWillTerminate(_ aNotification: Notification) {
         // Insert code here to tear down your application
+    }
+    
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        return true
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -63,6 +78,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
     
+	@MainActor
+	func showUpdateAlert() {
+		guard !Preferences.shared.updateInfo070 else { return }
+		Preferences.shared.updateInfo070 = true
+		
+		
+		let alert = NSAlert()
+		alert.messageText = "IINA-Plus 0.7.0"
+		alert.informativeText = """
+🎉
+
+IINA-Plus 弹幕插件已经和原版IINA v1.3.2+ 兼容
+请安装原版IINA 后进入IINA-Plus 设置 安装/更新 插件
+The IINA-Plus danmaku plugin is compatible with the official IINA v1.3.2+.
+Please go to IINA-Plus settings after installing official IINA to install/update the plugin.
+
+IINA official website
+https://iina.io/
+"""
+		
+		alert.alertStyle = .warning
+		alert.addButton(withTitle: "OK")
+		let _ = alert.runModal()
+	}
+	
     func initImageCache() {
         Log("Image Cache Path: \(SDImageCache.shared.diskCachePath)")
         

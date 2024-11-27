@@ -4,6 +4,12 @@
 /* Quit without saves error question message */
 "Could not save changes while quitting. Quit anyway?" = "退出时无法保存更改。 确认退出？";
 
+/* Click OK for detailed installation guide. */
+"Danmaku plugin Install Alert informativeText" = "打开IINA-PLUS 的设置进行安装.";
+
+/* You need to install the Danmaku plugin for IINA */
+"Danmaku plugin Install Alert messageText" = "你需要为IINA 安装弹幕插件";
+
 /* All */
 "LiveSite.All" = "全部";
 
@@ -31,11 +37,17 @@
 /* CC163 */
 "SupportSites.CC163" = "网易CC";
 
+/* DouYin */
+"SupportSites.DouYin" = "抖音";
+
 /* Douyu */
 "SupportSites.Douyu" = "斗鱼";
 
 /* Huya */
 "SupportSites.Huya" = "虎牙";
+
+/* QQ Live */
+"SupportSites.QQLive" = "企鹅体育";
 
 /* Unsupported */
 "SupportSites.Unsupported" = "不支持";
@@ -56,7 +68,13 @@
 "VideoGetError.notSupported" = "网站不支持或链接格式错误.";
 
 /* ಠ_ಠ  oops,  */
-"VideoGetError.oops" = "ಠ_ಠ  oops, ";
+"VideoGetError.oops" = "ಠ_ಠ  哦嚯, ";
 
-/* DouYin */
-"SupportSites.DouYin" = "抖音";
+/* plugin install finish */
+"PluginInstaller.tips" = "\n准备就绪  ✅\n重启 IINA 以生效";
+
+/* Loading... */
+"Loading..." = "加载中....";
+
+/* need login. */
+"VideoGetError.needLogin" = "需要登录";
